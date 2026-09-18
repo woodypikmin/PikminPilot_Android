@@ -1,8 +1,14 @@
 <resources>
-    <color name="pilot_bg">#101417</color>
-    <color name="pilot_card">#1B2227</color>
-    <color name="pilot_text">#F5F7F8</color>
-    <color name="pilot_muted">#A8B0B5</color>
-    <color name="pilot_accent">#8AD56A</color>
-    <color name="pilot_warn">#F3C969</color>
+    <color name="bg_grouped">#F2F2F7</color>
+    <color name="card">#FFFFFF</color>
+    <color name="secondary_card">#F7F7FA</color>
+    <color name="text_primary">#1C1C1E</color>
+    <color name="text_secondary">#6E6E73</color>
+    <color name="pilot_green">#34C759</color>
+    <color name="pilot_teal">#30B0C7</color>
+    <color name="pilot_orange">#FF9500</color>
+    <color name="divider">#E5E5EA</color>
+    <color name="pink">#FF5DB1</color>
+    <color name="purple">#AF52DE</color>
+    <color name="rock">#4A4A4D</color>
 </resources>

@@ -224,37 +224,6 @@ public final class Detector {
         return bestPoint;
     }
 
-    /**
-     * A permissive Android fallback for the first port: finds fruit-like colorful
-     * blobs aligned to the 3-column expedition grid. The iOS build additionally
-     * uses Vision OCR + status-card borders before declaring an item safe.
-     */
-    public static List<PointF> detectCargoFallback(Bitmap b) {
-        int w=b.getWidth(),h=b.getHeight(),startY=(int)(h*0.16),endY=(int)(h*0.96);
-        boolean[] mask=new boolean[w*h];
-        for(int y=startY;y<endY;y++)for(int x=0;x<w;x++){
-            Hsv v=hsv(b.getPixel(x,y));
-            boolean colorful=v.s>0.30&&v.v>0.24;
-            boolean purple=v.h>=235&&v.h<=335&&v.s>0.09&&v.v>0.11;
-            boolean red=(v.h<=28||v.h>=332)&&v.s>0.20&&v.v>0.18;
-            if(colorful||purple||red)mask[y*w+x]=true;
-        }
-        double colWidth=w/3.0; List<PointF> out=new ArrayList<>();
-        for(Component c:components(mask,w,h)){
-            double bw=c.rect.width(),bh=c.rect.height();
-            if(bw<w*0.040||bw>w*0.185||bh<h*0.018||bh>h*0.110)continue;
-            double aspect=bw/Math.max(1,bh),fill=c.count/Math.max(1.0,bw*bh);
-            if(aspect<0.48||aspect>2.0||fill<0.42)continue;
-            PointF p=c.center(); int col=Math.min(2,Math.max(0,(int)(p.x/colWidth))); double expected=(col+0.5)*colWidth;
-            if(Math.abs(p.x-expected)>colWidth*0.30)continue;
-            out.add(p);
-        }
-        out.sort((a,bb)->Math.abs(a.y-bb.y)>12?Float.compare(a.y,bb.y):Float.compare(a.x,bb.x));
-        List<PointF> dedup=new ArrayList<>();
-        for(PointF p:out){boolean dup=false;for(PointF old:dedup)if(Math.abs(old.x-p.x)<w*0.045&&Math.abs(old.y-p.y)<h*0.035){dup=true;break;}if(!dup)dedup.add(p);}
-        return dedup;
-    }
-
     public static List<PointF> detectPikminSelectionGrid(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         double[] cols={0.129,0.313,0.492,0.672,0.849};
