@@ -47,7 +47,7 @@ public final class PilotController {
         try{
             requireService();
             status("啟動 • 開始掃描探險列表");
-            emit("BUILD 0.2.3-alpha5-r1 • swipeRowY=0.404H • swipeX=0.88W→0.43W");
+            emit("BUILD 0.2.5-alpha7 • UNIVERSAL FILTER ROW • seedling CTA OCR+geometry");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -75,11 +75,11 @@ public final class PilotController {
 
                 status("第 "+round+" 輪：前往探險");
                 if(choice.item.kind==CargoDetector.Kind.SEEDLING){
-                    PointAndBitmap expedition=waitSeedlingExpeditionCta(4,cfg.fast?180:280);
+                    PointAndBitmap expedition=waitSeedlingExpeditionCta(8,cfg.fast?220:320);
                     if(expedition==null) throw new RuntimeException("花苗：前往探險文字未辨識到");
                     tap(expedition.p.x,expedition.p.y,55);
                     sleep(cfg.fast?1050:1450);
-                    if(!confirmSelectionPage(4,cfg.fast?160:240))
+                    if(!confirmSelectionPage(6,cfg.fast?180:260))
                         throw new RuntimeException("花苗：已點前往探險，但選皮頁未確認");
                 }else{
                     PointAndBitmap expedition=waitPoint("前往探險",18,cfg.fast?240:380,Detector::detectExpeditionButton);
@@ -90,11 +90,10 @@ public final class PilotController {
 
                 status("第 "+round+" 輪：展開皮克敏顏色列");
                 Bitmap reveal=shot();
-                // Android Pikmin Bloom places the horizontal colour-chip row higher than the
-                // iOS content-normalized 0.432 position.  On the supplied 912x2048 Android
-                // capture the chip centres are at about y=826px (0.404H).  Using 0.432H
-                // lands around y=885px, i.e. on the first Pikmin-card row, so the list does
-                // not scroll horizontally.  Swipe directly through the colour chips instead.
+                // Do not assume a phone-specific Y coordinate here.  Detect the
+                // coloured chip strip on this exact screenshot, then swipe through
+                // its measured row.  This survives different screen density, font
+                // size, navigation-bar height and Pikmin Bloom sheet layout.
                 swipeFilterRowLeft(reveal,380);
                 sleep(cfg.fast?300:480);
 
@@ -161,6 +160,15 @@ public final class PilotController {
             int busy=0,complete=0;for(CargoDetector.StatusCard c:result.cards){if(c.state==CargoDetector.CardState.BUSY)busy++;if(c.state==CargoDetector.CardState.COMPLETE)complete++;}
             emit("ROUND "+round+" SCAN • FRUIT="+result.fruits.size()+" • SEEDLING="+result.seedlings.size()+
                     " • MATCH="+available.size()+" • BUSY="+busy+" • COMPLETE="+complete+" • BLOCKED="+result.blocked.size());
+            if(!result.seedlings.isEmpty()) {
+                StringBuilder labels=new StringBuilder();
+                for(int si=0;si<result.seedlings.size() && si<6;si++) {
+                    CargoDetector.Candidate c=result.seedlings.get(si);
+                    if(labels.length()>0) labels.append(" | ");
+                    labels.append(c.label).append(" @(").append(Math.round(c.center.x)).append(',').append(Math.round(c.center.y)).append(')');
+                }
+                emit("SEEDLING OCR ✅ • "+labels);
+            }
             if(!available.isEmpty()) return new CargoAndBitmap(available.get(0),b);
 
             if(swipes>=8){
@@ -182,15 +190,58 @@ public final class PilotController {
 
     private PointAndBitmap waitSeedlingExpeditionCta(int attempts,long delay)throws Exception{
         for(int i=0;i<attempts&&running.get();i++){
-            Bitmap b=shot();List<CargoDetector.OcrItem> ocr=CargoDetector.recognize(b);PointF p=CargoDetector.expeditionCtaPoint(ocr);
-            if(p!=null){emit("花苗 前往探險 OCR found ✅");return new PointAndBitmap(p,b);}sleep(delay);
-        }return null;
+            Bitmap b=shot();
+            List<CargoDetector.OcrItem> ocr=CargoDetector.recognize(b);
+            PointF p=CargoDetector.expeditionCtaPoint(ocr);
+            if(p!=null){
+                emit("花苗 前往探險 OCR found ✅ • attempt="+(i+1)+"/"+attempts+
+                        " • px=("+Math.round(p.x)+","+Math.round(p.y)+")");
+                return new PointAndBitmap(p,b);
+            }
+
+            // New-phone fallback: the green outlined CTA has a stable shape even
+            // when ML Kit misses its thin Chinese text.  This detector is gated
+            // to a wide/low central teal pill, so the blue seedling pot is rejected.
+            PointF geometric=Detector.detectSeedlingExpeditionCta(b);
+            if(geometric!=null){
+                emit("花苗 前往探險 GEOMETRY found ✅ • attempt="+(i+1)+"/"+attempts+
+                        " • px=("+Math.round(geometric.x)+","+Math.round(geometric.y)+")");
+                return new PointAndBitmap(geometric,b);
+            }
+
+            if(i==0||i==attempts-1){
+                StringBuilder seen=new StringBuilder();
+                for(CargoDetector.OcrItem item:ocr){
+                    if(item.rect.centerY()<b.getHeight()*0.42f) continue;
+                    String t=item.text==null?"":item.text.trim();
+                    if(t.isEmpty()) continue;
+                    if(seen.length()>0)seen.append(" | ");
+                    seen.append(t);
+                    if(seen.length()>180)break;
+                }
+                emit("花苗 前往探險 waiting • attempt="+(i+1)+"/"+attempts+
+                        " • lower OCR="+(seen.length()==0?"<none>":seen.toString()));
+            }
+            sleep(delay);
+        }
+        return null;
     }
 
     private boolean confirmSelectionPage(int attempts,long delay)throws Exception{
         for(int i=0;i<attempts&&running.get();i++){
-            Bitmap b=shot();if(CargoDetector.hasSelectionHeader(CargoDetector.recognize(b))){emit("selection page confirmed ✅");return true;}sleep(delay);
-        }return false;
+            Bitmap b=shot();
+            if(CargoDetector.hasSelectionHeader(CargoDetector.recognize(b))){
+                emit("selection page confirmed ✅ • OCR header");
+                return true;
+            }
+            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
+            if(row!=null){
+                emit("selection page confirmed ✅ • filter row geometry • y="+Math.round(row.y)+" • chips="+row.chipCount);
+                return true;
+            }
+            sleep(delay);
+        }
+        return false;
     }
 
     private boolean waitForExpeditionList(int attempts,long delay)throws Exception{
@@ -237,14 +288,31 @@ public final class PilotController {
     private Bitmap shot()throws Exception{requireService();Bitmap b=service.screenshot().get(4,TimeUnit.SECONDS);if(b==null)throw new RuntimeException("screenshot returned null");return b;}
     private void tap(float x,float y,long ms)throws Exception{if(!running.get())throw new InterruptedException("stopped");if(!service.tap(x,y,ms).get(3,TimeUnit.SECONDS))throw new RuntimeException("tap cancelled");}
     private void swipeFilterRowLeft(Bitmap frame,long ms)throws Exception {
-        // Coordinates are based on the Android selection-page screenshot itself, not the
-        // iOS activeContentRect mapping.  Start inside the visible chip strip and drag left.
         float w=frame.getWidth(), h=frame.getHeight();
-        float y=h*0.404f;
-        float fromX=w*0.88f;
-        float toX=w*0.43f;
-        emit("FILTER ROW SWIPE • frame="+Math.round(w)+"×"+Math.round(h)+
-                " • y=0.404H • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+        Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(frame);
+        float y,fromX,toX;
+        if(row!=null){
+            y=row.y;fromX=row.fromX;toX=row.toX;
+            emit("FILTER ROW AUTO ✅ • frame="+Math.round(w)+"×"+Math.round(h)+
+                    " • chips="+row.chipCount+
+                    " • y="+Math.round(y)+" ("+String.format(java.util.Locale.US,"%.3f",y/Math.max(1f,h))+"H)"+
+                    " • spacing="+Math.round(row.spacing)+
+                    " • swipe=("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+        }else{
+            PointF hint=null;
+            try{hint=CargoDetector.filterRowHintPoint(CargoDetector.recognize(frame));}catch(Throwable ignored){}
+            if(hint!=null){
+                y=hint.y;fromX=w*0.78f;toX=w*0.36f;
+                emit("FILTER ROW OCR FALLBACK ✅ • y="+Math.round(y)+
+                        " • swipe=("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+            }else{
+                // Absolute last resort only. Normal builds should use either the
+                // image-detected coloured row or the 飾品/自動 OCR anchor above.
+                y=h*0.42f;fromX=w*0.78f;toX=w*0.36f;
+                emit("FILTER ROW AUTO MISS ⚠️ • last-resort swipe • frame="+Math.round(w)+"×"+Math.round(h)+
+                        " • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+            }
+        }
         swipe(fromX,y,toX,y,ms);
     }
 
@@ -255,9 +323,18 @@ public final class PilotController {
 
     public void testScreenshot(java.util.function.Consumer<String> callback){
         worker.execute(()->{try{
-            requireService();Bitmap b=shot();CargoDetector.Result c=CargoDetector.scan(b);PointF e=Detector.detectExpeditionButton(b),g=Detector.detectActiveGo(b),x=Detector.detectCarryingClose(b);
+            requireService();
+            Bitmap b=shot();
+            CargoDetector.Result c=CargoDetector.scan(b);
+            PointF e=Detector.detectExpeditionButton(b),g=Detector.detectActiveGo(b),x=Detector.detectCarryingClose(b);
+            PointF seedCta=Detector.detectSeedlingExpeditionCta(b);
+            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
-            String r="BUILD 0.2.3-alpha5-r1 • Screenshot "+b.getWidth()+"×"+b.getHeight()+" • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+" • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+xText;
+            String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
+            String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
+            String r="BUILD 0.2.5-alpha7 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+                    " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
+                    " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));
         }catch(Throwable t){main.post(()->callback.accept("Screenshot failed: "+t.getMessage()));}});
     }

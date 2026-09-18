@@ -138,8 +138,11 @@ public final class CargoDetector {
             if(kind==Kind.FRUIT) fruit.add(candidate); else if(kind==Kind.SEEDLING) seed.add(candidate); else blocked.add(candidate);
         }
 
-        // Same OCR-first seedling fallback as iOS: gray pots can disappear from the color mask.
-        for(OcrItem item:ocr) if(isSeedlingLabel(item.text)) {
+        // OCR-first seedling fallback. In addition to direct one-line labels, Android OCR
+        // sometimes splits 冰藍花苗 into "冰藍" + "花苗", or 大花苗 into
+        // "大" + "花苗". Re-join nearby OCR lines within the same grid column.
+        // This keeps plain top-level 花苗 rejected while recovering the two special labels.
+        for(OcrItem item:seedlingLabelItems(ocr,w,h)) {
             int col=Math.min(2,Math.max(0,(int)(item.rect.centerX()/colWidth)));
             float cx=(float)((col+0.5)*colWidth);
             float cy=(float)Math.max(h*0.17, item.rect.top-h*0.070);
@@ -154,9 +157,85 @@ public final class CargoDetector {
     }
 
     public static boolean isSeedlingLabel(String text) {
-        String n=normalize(text);
+        String n=normalizeSeedlingOcr(text);
         if(n.equals("花苗")) return false;
-        return n.contains("色花苗") || n.contains("冰藍花苗") || n.contains("冰蓝花苗") || n.contains("大花苗");
+
+        // Normal color-qualified seedlings, plus the two real labels that do not
+        // contain 色花苗. normalizeSeedlingOcr() absorbs common Android OCR
+        // variants such as 冰蓝 / 冰籃 and 花苖.
+        return n.contains("色花苗") || n.contains("冰藍花苗") || n.contains("大花苗");
+    }
+
+    /**
+     * Returns OCR items that safely identify expedition seedlings.
+     * Direct labels are accepted first. Then nearby OCR lines in the same 3-column
+     * cell are joined, which catches e.g. "冰藍" + "花苗" and "大" + "花苗".
+     * The navigation label 花苗 is above the expedition content region and remains
+     * rejected even if it appears by itself.
+     */
+    private static List<OcrItem> seedlingLabelItems(List<OcrItem> ocr,int w,int h) {
+        List<OcrItem> out=new ArrayList<>();
+        double colWidth=w/3.0;
+
+        for(OcrItem item:ocr) {
+            if(item.rect.centerY()<h*0.16f) continue;
+            if(isSeedlingLabel(item.text)) addOcrUnique(out,item,w,h);
+        }
+
+        for(int col=0;col<3;col++) {
+            final int targetCol=col;
+            List<OcrItem> local=new ArrayList<>();
+            for(OcrItem item:ocr) {
+                if(item.rect.centerY()<h*0.16f) continue;
+                int itemCol=Math.min(2,Math.max(0,(int)(item.rect.centerX()/colWidth)));
+                if(itemCol==targetCol) local.add(item);
+            }
+            local.sort(Comparator.comparingDouble(i->i.rect.top));
+
+            for(int i=0;i<local.size();i++) {
+                RectF union=new RectF(local.get(i).rect);
+                StringBuilder joined=new StringBuilder(local.get(i).text);
+                float lastBottom=local.get(i).rect.bottom;
+
+                // Up to three adjacent OCR lines/tokens is enough for the item label
+                // while avoiding broad joins across unrelated expedition rows.
+                for(int j=i+1;j<local.size() && j<=i+2;j++) {
+                    OcrItem next=local.get(j);
+                    float gap=next.rect.top-lastBottom;
+                    if(gap>h*0.040f) break;
+                    if(Math.abs(next.rect.centerX()-union.centerX())>colWidth*0.38) break;
+
+                    joined.append(next.text);
+                    union.union(next.rect);
+                    lastBottom=Math.max(lastBottom,next.rect.bottom);
+
+                    String candidate=joined.toString();
+                    if(isSeedlingLabel(candidate))
+                        addOcrUnique(out,new OcrItem(candidate,new RectF(union)),w,h);
+                }
+            }
+        }
+        return out;
+    }
+
+    private static void addOcrUnique(List<OcrItem> out,OcrItem item,int w,int h) {
+        String normalized=normalizeSeedlingOcr(item.text);
+        for(OcrItem old:out) {
+            if(normalizeSeedlingOcr(old.text).equals(normalized) &&
+                    Math.abs(old.rect.centerX()-item.rect.centerX())<w*0.08f &&
+                    Math.abs(old.rect.centerY()-item.rect.centerY())<h*0.05f) return;
+        }
+        out.add(item);
+    }
+
+    private static String normalizeSeedlingOcr(String s) {
+        return normalize(s)
+                .replace("蓝","藍")
+                .replace("籃","藍")
+                .replace("苖","苗")
+                .replace("氷","冰")
+                .replace("丨","")
+                .replace("|","");
     }
 
     public static boolean isKnownFruitLabel(String text) {
@@ -166,20 +245,69 @@ public final class CargoDetector {
     }
 
     public static boolean hasExpeditionCta(List<OcrItem> items) {
+        return expeditionCtaPoint(items)!=null;
+    }
+
+    /**
+     * OCR-first CTA locator with tolerance for traditional/simplified Chinese,
+     * one-character OCR damage, and ML Kit splitting "前往" / "探險" into
+     * neighbouring line boxes.
+     */
+    public static PointF expeditionCtaPoint(List<OcrItem> items) {
         for(OcrItem i:items) {
-            String t=normalize(i.text).toLowerCase();
-            if(t.contains("前往探險")||t.contains("前往探险")||t.contains("gotoexpedition")||t.contains("探検へ")||t.contains("探險へ")) return true;
+            if(isExpeditionCtaText(i.text)) return new PointF(i.rect.centerX(),i.rect.centerY());
         }
+
+        float maxB=maxBottom(items), maxR=1;
+        for(OcrItem i:items) maxR=Math.max(maxR,i.rect.right);
+        for(int a=0;a<items.size();a++) for(int b=a+1;b<items.size();b++) {
+            OcrItem x=items.get(a), y=items.get(b);
+            float dy=Math.abs(x.rect.centerY()-y.rect.centerY());
+            if(dy>Math.max(18,maxB*0.035f)) continue;
+            float gap=Math.max(0,Math.max(x.rect.left,y.rect.left)-Math.min(x.rect.right,y.rect.right));
+            if(gap>Math.max(70,maxR*0.20f)) continue;
+            OcrItem left=x.rect.centerX()<=y.rect.centerX()?x:y;
+            OcrItem right=left==x?y:x;
+            if(isExpeditionCtaText(left.text+right.text)) {
+                RectF u=new RectF(left.rect); u.union(right.rect);
+                return new PointF(u.centerX(),u.centerY());
+            }
+        }
+        return null;
+    }
+
+    private static boolean isExpeditionCtaText(String raw) {
+        String t=normalizeCta(raw);
+        if(t.contains("前往探險")||t.contains("gotoexpedition")||t.contains("探検へ")||t.contains("探險へ")) return true;
+        if(t.contains("前往")&&t.contains("探險")) return true;
+        // The Chinese target is only four characters.  Accept one damaged glyph
+        // after normalisation, but not two, to keep this safe on detail pages.
+        if(t.length()>=3&&t.length()<=6&&editDistance(t,"前往探險")<=1) return true;
         return false;
     }
 
-    public static PointF expeditionCtaPoint(List<OcrItem> items) {
-        for(OcrItem i:items) {
-            String t=normalize(i.text).toLowerCase();
-            if(t.contains("前往探險")||t.contains("前往探险")||t.contains("gotoexpedition")||t.contains("探検へ")||t.contains("探險へ"))
-                return new PointF(i.rect.centerX(),i.rect.centerY());
+    private static String normalizeCta(String s) {
+        return normalize(s).toLowerCase()
+                .replace("险","險")
+                .replace("徃","往")
+                .replace("探検","探險")
+                .replace("探险","探險")
+                .replace("丨","")
+                .replace("|","");
+    }
+
+    private static int editDistance(String a,String b) {
+        int[] prev=new int[b.length()+1],cur=new int[b.length()+1];
+        for(int j=0;j<=b.length();j++)prev[j]=j;
+        for(int i=1;i<=a.length();i++){
+            cur[0]=i;
+            for(int j=1;j<=b.length();j++){
+                int cost=a.charAt(i-1)==b.charAt(j-1)?0:1;
+                cur[j]=Math.min(Math.min(cur[j-1]+1,prev[j]+1),prev[j-1]+cost);
+            }
+            int[] tmp=prev;prev=cur;cur=tmp;
         }
-        return null;
+        return prev[b.length()];
     }
 
     public static boolean hasSelectionHeader(List<OcrItem> items) {
@@ -188,6 +316,18 @@ public final class CargoDetector {
             if(t.contains("可以選擇最多")||t.contains("可以选择最多")||t.contains("選擇最多")||t.contains("选择最多")||t.contains("selectupto")) return true;
         }
         return false;
+    }
+
+    /** OCR fallback for locating the horizontal Pikmin colour-filter strip. */
+    public static PointF filterRowHintPoint(List<OcrItem> items) {
+        OcrItem automatic=null;
+        for(OcrItem i:items) {
+            String t=normalize(i.text).toLowerCase();
+            if(t.contains("飾品")||t.contains("饰品")||t.contains("decor"))
+                return new PointF(i.rect.centerX(),i.rect.centerY());
+            if(t.equals("自動")||t.equals("自动")||t.contains("auto")) automatic=i;
+        }
+        return automatic==null?null:new PointF(automatic.rect.centerX(),automatic.rect.centerY());
     }
 
     public static boolean hasExpeditionTab(List<OcrItem> items) {
