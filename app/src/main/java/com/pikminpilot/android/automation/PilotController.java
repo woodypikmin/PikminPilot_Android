@@ -47,7 +47,7 @@ public final class PilotController {
         try{
             requireService();
             status("啟動 • 開始掃描探險列表");
-            emit("BUILD 0.2.8-alpha10 • iOS 11.5.4.31 parity • frozen selection grid • fresh magenta filter anchors • card-first cargo safety");
+            emit("BUILD 0.2.9-alpha11 • fast geometric selection • stateful seedling transition • direct-first filter • card-first cargo safety");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -75,12 +75,12 @@ public final class PilotController {
 
                 status("第 "+round+" 輪：前往探險");
                 if(choice.item.kind==CargoDetector.Kind.SEEDLING){
-                    PointAndBitmap expedition=waitSeedlingExpeditionCta(8,cfg.fast?220:320);
-                    if(expedition==null) throw new RuntimeException("花苗：前往探險文字未辨識到");
-                    tapMapped(expedition.b,expedition.p.x,expedition.p.y,55,"EXPEDITION CTA");
-                    sleep(cfg.fast?1050:1450);
-                    if(!confirmSelectionPage(6,cfg.fast?180:260))
-                        throw new RuntimeException("花苗：已點前往探險，但選皮頁未確認");
+                    // Treat the seedling detail -> selection transition as a state
+                    // machine instead of two unrelated OCR gates.  If the CTA tap
+                    // succeeds but OCR misses the next page, keep looking for
+                    // selection-page evidence instead of falling back to a stale
+                    // "前往探險未辨識到" error.
+                    enterSeedlingSelectionPage(round,cfg);
                 }else{
                     PointAndBitmap expedition=waitPoint("前往探險",18,cfg.fast?240:380,Detector::detectExpeditionButton);
                     if(expedition==null) throw new RuntimeException("水果：前往探險按鈕未辨識到");
@@ -88,23 +88,12 @@ public final class PilotController {
                     sleep(cfg.fast?1450:2000);
                 }
 
-                status("第 "+round+" 輪：展開皮克敏顏色列");
-                Bitmap reveal=shot();
-                // Do not assume a phone-specific Y coordinate here.  Detect the
-                // coloured chip strip on this exact screenshot, then swipe through
-                // its measured row.  This survives different screen density, font
-                // size, navigation-bar height and Pikmin Bloom sheet layout.
-                swipeFilterRowLeft(reveal,380);
-                sleep(cfg.fast?300:480);
-
                 status("第 "+round+" 輪：辨識"+PilotConfig.pikminName(cfg.type)+"皮克敏");
-                PointAndBitmap filter=null;
-                for(int a=0;a<5&&running.get();a++){
-                    Bitmap b=shot(); PointF p=Detector.detectPikminFilter(b,cfg.type);
-                    if(p!=null){filter=new PointAndBitmap(p,b);break;}
-                    swipeFilterRowLeft(b,340);
-                    sleep(cfg.fast?280:420);
-                }
+                // On Android the requested chip (especially pink) is often already
+                // visible when the selection sheet opens.  Detect first and only
+                // swipe when necessary.  This avoids a needless second-round swipe
+                // that can move an already-visible pink chip away from the detector.
+                PointAndBitmap filter=findPikminFilterAdaptive(cfg,round);
                 if(filter==null) throw new RuntimeException(PilotConfig.pikminName(cfg.type)+"皮克敏顏色圓圈未辨識到");
                 emit("PIKMIN FILTER TARGET ✅ • type="+PilotConfig.pikminName(cfg.type)+
                         " • px=("+Math.round(filter.p.x)+","+Math.round(filter.p.y)+")"+
@@ -114,7 +103,7 @@ public final class PilotController {
                 sleep(cfg.fast?220:320);
 
                 status("第 "+round+" 輪：選擇 "+cfg.pikminCount+" 隻皮克敏");
-                selectPikminExact(cfg,round);
+                selectPikminFastGeometric(cfg,round);
 
                 status("第 "+round+" 輪：等待 GO 亮起");
                 PointAndBitmap go=waitPoint("GO",8,cfg.fast?60:90,Detector::detectActiveGo);
@@ -179,149 +168,139 @@ public final class PilotController {
         return null;
     }
 
-    private PointAndBitmap waitSeedlingExpeditionCta(int attempts,long delay)throws Exception{
+    /**
+     * Robust seedling detail -> Pikmin selection transition.
+     *
+     * Important: once the CTA has been tapped, never go back to reporting
+     * "前往探險未辨識到".  The only question after the tap is whether the
+     * selection page appeared.  This prevents the intermittent ice-blue case
+     * where the game transitions correctly but a later OCR frame no longer
+     * contains the old CTA text.
+     */
+    private void enterSeedlingSelectionPage(int round,PilotConfig cfg)throws Exception{
+        boolean tapped=false;
+        final int attempts=cfg.fast?9:11;
+        final long delay=cfg.fast?180:240;
+
         for(int i=0;i<attempts&&running.get();i++){
             Bitmap b=shot();
-            List<CargoDetector.OcrItem> ocr=CargoDetector.recognize(b);
-            PointF p=CargoDetector.expeditionCtaPoint(ocr);
-            if(p!=null){
-                emit("花苗 前往探險 OCR found ✅ • attempt="+(i+1)+"/"+attempts+
-                        " • px=("+Math.round(p.x)+","+Math.round(p.y)+")");
-                return new PointAndBitmap(p,b);
+            List<CargoDetector.OcrItem> ocr;
+            try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
+
+            String proof=selectionPageProof(b,ocr,cfg.type);
+            if(proof!=null){
+                emit("SEEDLING TRANSITION ✅ • selection page • proof="+proof+
+                        " • CTA-tapped="+tapped+" • attempt="+(i+1)+"/"+attempts);
+                return;
             }
 
-            // New-phone fallback: the green outlined CTA has a stable shape even
-            // when ML Kit misses its thin Chinese text.  This detector is gated
-            // to a wide/low central teal pill, so the blue seedling pot is rejected.
-            PointF geometric=Detector.detectSeedlingExpeditionCta(b);
-            if(geometric!=null){
-                emit("花苗 前往探險 GEOMETRY found ✅ • attempt="+(i+1)+"/"+attempts+
-                        " • px=("+Math.round(geometric.x)+","+Math.round(geometric.y)+")");
-                return new PointAndBitmap(geometric,b);
-            }
-
-            if(i==0||i==attempts-1){
-                StringBuilder seen=new StringBuilder();
-                for(CargoDetector.OcrItem item:ocr){
-                    if(item.rect.centerY()<b.getHeight()*0.42f) continue;
-                    String t=item.text==null?"":item.text.trim();
-                    if(t.isEmpty()) continue;
-                    if(seen.length()>0)seen.append(" | ");
-                    seen.append(t);
-                    if(seen.length()>180)break;
+            if(!tapped){
+                PointF p=CargoDetector.expeditionCtaPoint(ocr);
+                String source="OCR";
+                if(p==null){p=Detector.detectSeedlingExpeditionCta(b);source="GEOMETRY";}
+                if(p!=null){
+                    emit("花苗 前往探險 "+source+" found ✅ • attempt="+(i+1)+"/"+attempts+
+                            " • px=("+Math.round(p.x)+","+Math.round(p.y)+")");
+                    tapMapped(b,p.x,p.y,55,"EXPEDITION CTA");
+                    tapped=true;
+                    emit("SEEDLING CTA TAP SENT ✅ • waiting only for selection-page evidence");
+                    sleep(cfg.fast?650:850);
+                    continue;
                 }
-                emit("花苗 前往探險 waiting • attempt="+(i+1)+"/"+attempts+
-                        " • lower OCR="+(seen.length()==0?"<none>":seen.toString()));
+                if(i==0||i==3||i==attempts-1)
+                    emit("花苗 前往探險 waiting • attempt="+(i+1)+"/"+attempts);
+            }else{
+                if(i==1||i==4||i==attempts-1)
+                    emit("SEEDLING TRANSITION waiting • CTA already tapped • attempt="+(i+1)+"/"+attempts);
             }
             sleep(delay);
+        }
+
+        if(tapped) throw new RuntimeException("花苗：前往探險已點擊，但選皮頁未確認");
+        throw new RuntimeException("花苗：前往探險未辨識到");
+    }
+
+    /** Strong selection-page signals that do not depend on one OCR sentence. */
+    private String selectionPageProof(Bitmap b,List<CargoDetector.OcrItem> ocr,PilotConfig.PikminType target){
+        try{
+            if(CargoDetector.hasSelectionHeader(ocr)) return "selection-header";
+            if(CargoDetector.filterRowHintPoint(ocr)!=null) return "decor/auto-row-label";
+        }catch(Throwable ignored){}
+        try{
+            // A valid purple/pink magenta pair is highly specific to the Pikmin
+            // filter row and is stronger than the generic coloured-row geometry.
+            PointF p=Detector.detectPikminFilter(b,target);
+            if(p!=null) return "requested-filter-magenta-pair";
+            p=Detector.detectPikminFilter(b,PilotConfig.PikminType.PINK);
+            if(p!=null) return "pink-magenta-pair";
+        }catch(Throwable ignored){}
+        return null;
+    }
+
+    /**
+     * Fresh-frame filter selection.  First inspect the row exactly as it opened;
+     * only reveal/scroll it if the requested chip is not already visible.
+     */
+    private PointAndBitmap findPikminFilterAdaptive(PilotConfig cfg,int round)throws Exception{
+        Bitmap first=shot();
+        PointF p=Detector.detectPikminFilter(first,cfg.type);
+        if(p!=null){
+            emit("PIKMIN FILTER DIRECT ✅ • round="+round+" • no swipe needed");
+            return new PointAndBitmap(p,first);
+        }
+
+        for(int a=0;a<5&&running.get();a++){
+            status("第 "+round+" 輪：展開皮克敏顏色列");
+            Bitmap before=(a==0?first:shot());
+            swipeFilterRowLeft(before,a==0?380:340);
+            sleep(cfg.fast?280:420);
+            Bitmap after=shot();
+            p=Detector.detectPikminFilter(after,cfg.type);
+            if(p!=null){
+                emit("PIKMIN FILTER AFTER SWIPE ✅ • attempt="+(a+1)+"/5");
+                return new PointAndBitmap(p,after);
+            }
+            emit("PIKMIN FILTER MISS • attempt="+(a+1)+"/5");
         }
         return null;
     }
 
-    private boolean confirmSelectionPage(int attempts,long delay)throws Exception{
-        for(int i=0;i<attempts&&running.get();i++){
-            Bitmap b=shot();
-            if(CargoDetector.hasSelectionHeader(CargoDetector.recognize(b))){
-                emit("selection page confirmed ✅ • OCR header");
-                return true;
-            }
-            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
-            if(row!=null){
-                emit("selection page confirmed ✅ • filter row geometry • y="+Math.round(row.y)+" • chips="+row.chipCount);
-                return true;
-            }
-            sleep(delay);
-        }
-        return false;
-    }
-
     /**
-     * iOS Stage 11.5.4.31 parity for Pikmin selection.
+     * Fast iOS-style selection with Android-safe geometric slot centres.
      *
-     * The iOS Runner takes ONE clean screenshot before any Pikmin is selected,
-     * detects the 5-column x 3-row grid once, then freezes those points for the
-     * whole selection tail.  Do not re-detect the grid after row 1: selected-card
-     * highlights and oversized Decor (airplanes/cups/hats) change visual energy
-     * and can pull a fresh detector away from slot 6.
-     *
-     * Android keeps the extra N/MAX OCR acknowledgement, but retries the SAME
-     * frozen slot coordinate when a tap is not accepted.
+     * There is intentionally NO per-tap OCR count acknowledgement here.  Some
+     * expedition items allow fewer Pikmin than the user's requested count; in
+     * that case the extra tap is harmless and GO is already available.  Waiting
+     * for N/MAX after every tap made selection slow and incorrectly treated a
+     * valid maxed-out party as an error.
      */
-    private void selectPikminExact(PilotConfig cfg,int round)throws Exception{
+    private void selectPikminFastGeometric(PilotConfig cfg,int round)throws Exception{
         final int desired=cfg.pikminCount;
-        Integer initial=readSelectedPikminCount();
-        int acknowledged=initial==null?0:Math.max(0,Math.min(desired,initial));
-        emit("PIKMIN COUNT START • requested="+desired+" • observed="+(initial==null?"OCR-MISS":initial));
+        Bitmap frame=shot();
+        List<PointF> grid=Detector.detectPikminSelectionGrid(frame);
+        if(grid.size()<Math.min(12,Math.max(2,desired)))
+            throw new RuntimeException("皮克敏格線辨識失敗：points="+grid.size());
 
-        // Match iOS selectPikminGrid(): one pristine frame, one grid, frozen points.
-        Bitmap referenceFrame=shot();
-        List<PointF> frozenGrid=Detector.detectPikminSelectionGrid(referenceFrame);
-        if(frozenGrid.size()<Math.min(12,Math.max(2,desired)))
-            throw new RuntimeException("皮克敏格線辨識失敗：clean-frame points="+frozenGrid.size());
-
-        StringBuilder gridLog=new StringBuilder("PIKMIN GRID FROZEN ✅ • ");
-        for(int i=0;i<Math.min(desired,frozenGrid.size());i++){
-            PointF p=frozenGrid.get(i);
-            if(i>0) gridLog.append(" | ");
-            gridLog.append(i+1).append("=(").append(Math.round(p.x)).append(',').append(Math.round(p.y)).append(')');
+        StringBuilder log=new StringBuilder("PIKMIN GRID STABLE ✅ • geometric centres • ");
+        for(int i=0;i<Math.min(desired,grid.size());i++){
+            if(i>0)log.append(" | ");
+            PointF q=grid.get(i);
+            log.append(i+1).append("=(").append(Math.round(q.x)).append(',').append(Math.round(q.y)).append(')');
         }
-        emit(gridLog.toString());
+        emit(log.toString());
 
-        for(int index=acknowledged;index<desired&&running.get();index++){
-            final int expected=index+1;
-            final PointF frozen=frozenGrid.get(index);
-            boolean ack=false;
-
-            for(int attempt=1;attempt<=3&&running.get();attempt++){
-                // Use a current frame only for screenshot->display coordinate mapping;
-                // the source point itself remains the clean-frame iOS coordinate.
-                Bitmap mappingFrame=shot();
-                float sx=frozen.x * mappingFrame.getWidth()/Math.max(1f,referenceFrame.getWidth());
-                float sy=frozen.y * mappingFrame.getHeight()/Math.max(1f,referenceFrame.getHeight());
-                PilotAccessibilityService.TapResult tr=service.tapFromBitmap(mappingFrame,sx,sy,cfg.fast?90:115)
-                        .get(4,TimeUnit.SECONDS);
-                emit("PIKMIN TAP "+expected+"/"+desired+" #"+attempt+
-                        " • frozen=("+Math.round(frozen.x)+","+Math.round(frozen.y)+")"+
-                        " • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+") → display=("+
-                        Math.round(tr.displayX)+","+Math.round(tr.displayY)+") • dispatch="+
-                        (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
-                if(!tr.accepted||!tr.completed){
-                    sleep(cfg.fast?120:180);
-                    continue;
-                }
-
-                sleep(cfg.fast?125:190);
-                Integer observed=readSelectedPikminCount();
-                if(observed==null){
-                    sleep(cfg.fast?90:140);
-                    observed=readSelectedPikminCount();
-                }
-                if(observed!=null){
-                    emit("PIKMIN COUNT ACK • expected="+expected+" • observed="+observed);
-                    if(observed>=expected){ acknowledged=observed; ack=true; break; }
-                    emit("PIKMIN TAP MISS ⚠️ • slot="+expected+" • retrying SAME frozen iOS slot");
-                }else{
-                    emit("PIKMIN COUNT OCR MISS ⚠️ • slot="+expected+" • preserving frozen grid; no re-detect");
-                    ack=true; acknowledged=expected; break;
-                }
-            }
-            if(!ack) throw new RuntimeException("第 "+expected+" 隻皮克敏點擊未被遊戲接受");
+        int count=Math.min(desired,grid.size());
+        for(int i=0;i<count&&running.get();i++){
+            PointF q=grid.get(i);
+            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(frame,q.x,q.y,cfg.fast?90:95)
+                    .get(3,TimeUnit.SECONDS);
+            emit("PIKMIN TAP "+(i+1)+"/"+desired+" • display=("+Math.round(tr.displayX)+","+
+                    Math.round(tr.displayY)+") • dispatch="+
+                    (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
+            // Keep the proven fast rhythm.  No screenshot/OCR between taps.
+            sleep(cfg.fast?35:55);
         }
-
-        sleep(cfg.fast?140:220);
-        Integer finalCount=readSelectedPikminCount();
-        if(finalCount!=null){
-            emit("PIKMIN COUNT FINAL • requested="+desired+" • observed="+finalCount);
-            if(finalCount!=desired) throw new RuntimeException("皮克敏數量不正確：要求 "+desired+"，畫面是 "+finalCount);
-        }else{
-            emit("PIKMIN COUNT FINAL • OCR-MISS ⚠️ • frozen-grid taps completed="+desired);
-        }
-    }
-
-    private Integer readSelectedPikminCount()throws Exception{
-        Bitmap b=shot();
-        try { return CargoDetector.selectedPikminCount(CargoDetector.recognize(b)); }
-        catch(Throwable t) { return null; }
+        sleep(cfg.fast?100:160);
     }
 
     /**
@@ -496,7 +475,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.2.8-alpha10 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.2.9-alpha11 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

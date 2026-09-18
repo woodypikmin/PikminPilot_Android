@@ -410,30 +410,59 @@ public final class Detector {
         return refined;
     }
 
+    /**
+     * Adaptive 5x3 Pikmin grid whose TAP POINTS are geometric cell centres.
+     *
+     * We still measure each row Y from the live screenshot, but we deliberately
+     * do NOT chase the visually strongest point inside each cell.  Oversized
+     * Decor (airplanes, cups, hats, etc.) can extend far away from a Pikmin body
+     * and used to drag slot 6 off target on some accounts.
+     *
+     * Row discovery uses a trimmed five-column score (middle three values), so
+     * one unusually large Decor in a row cannot dominate the row-Y estimate.
+     */
     public static List<PointF> detectPikminSelectionGrid(Bitmap b) {
-        int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
+        int w=b.getWidth(),h=b.getHeight();
+        RectF vp=activeContentRect(b);
         double[] cols={0.129,0.313,0.492,0.672,0.849};
-        double aspect=vp.width()/Math.max(1,vp.height()); double t=Math.min(1,Math.max(0,(aspect-0.48)/(0.70-0.48)));
+
+        double aspect=vp.width()/Math.max(1,vp.height());
+        double t=Math.min(1,Math.max(0,(aspect-0.48)/(0.70-0.48)));
         double[] phone={0.517,0.662,0.801},tablet={0.550,0.720,0.885};
         double[] rows=new double[3];
         int radius=Math.max(5,(int)(Math.min(vp.width(),vp.height())*0.018));
         int collectiveStep=Math.max(3,(int)(vp.height()/260.0));
+
         for(int r=0;r<3;r++){
-            double seed=phone[r]+(tablet[r]-phone[r])*t,seedY=vp.top+vp.height()*seed,bestY=seedY,bestScore=-1e9;
+            double seed=phone[r]+(tablet[r]-phone[r])*t;
+            double seedY=vp.top+vp.height()*seed;
+            double bestY=seedY,bestScore=-1e9;
+
             for(int cy=(int)(seedY-vp.height()*0.060);cy<=(int)(seedY+vp.height()*0.060);cy+=collectiveStep){
-                double sum=0;int used=0;for(double col:cols){int cx=(int)(vp.left+vp.width()*col);if(cx>1&&cx<w-2&&cy>1&&cy<h-2){sum+=visualScore(b,cx,cy,radius);used++;}}
-                if(used>0&&sum/used>bestScore){bestScore=sum/used;bestY=cy;}
+                double[] scores=new double[5];
+                int used=0;
+                for(double col:cols){
+                    int cx=(int)(vp.left+vp.width()*col);
+                    if(cx>1&&cx<w-2&&cy>1&&cy<h-2) scores[used++]=visualScore(b,cx,cy,radius);
+                }
+                if(used<3) continue;
+                java.util.Arrays.sort(scores,0,used);
+                double robust;
+                if(used>=5) robust=(scores[1]+scores[2]+scores[3])/3.0;
+                else if(used==4) robust=(scores[1]+scores[2])*0.5;
+                else robust=scores[1];
+                if(robust>bestScore){bestScore=robust;bestY=cy;}
             }
-            rows[r]=(bestY-vp.top)/vp.height();
+            rows[r]=(bestY-vp.top)/Math.max(1f,vp.height());
         }
-        List<PointF> out=new ArrayList<>(); int step=Math.max(3,(int)(Math.min(vp.width(),vp.height())/180.0));
-        double searchX=vp.width()*0.060,searchY=vp.height()*0.042;
-        for(double row:rows)for(double col:cols){
-            double seedX=vp.left+vp.width()*col,seedY=vp.top+vp.height()*row;PointF best=new PointF((float)seedX,(float)seedY);double bs=-1e9;
-            for(int cy=(int)(seedY-searchY);cy<=(int)(seedY+searchY);cy+=step)for(int cx=(int)(seedX-searchX);cx<=(int)(seedX+searchX);cx+=step){
-                if(cx>=vp.left&&cx<vp.right&&cy>=vp.top&&cy<vp.bottom){double s=visualScore(b,cx,cy,radius);if(s>bs){bs=s;best=new PointF(cx,cy);}}
+
+        List<PointF> out=new ArrayList<>(15);
+        for(double row:rows){
+            float y=(float)(vp.top+vp.height()*row);
+            for(double col:cols){
+                float x=(float)(vp.left+vp.width()*col);
+                out.add(new PointF(x,y));
             }
-            out.add(best);
         }
         return out;
     }
