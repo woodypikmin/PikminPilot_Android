@@ -91,6 +91,7 @@
             </LinearLayout>
 
             <Button android:id="@+id/startPilot" android:layout_width="match_parent" android:layout_height="54dp" android:layout_marginTop="14dp" android:text="START PILOT" android:textStyle="bold" android:textColor="#FFFFFF" android:textSize="16sp" android:background="@drawable/button_primary"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="開始前：先讓 Pikmin Bloom 停在『探險』三欄列表，再切回這裡按 START。新版會先確認列表，確認前不會亂滑或亂點。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
             <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="8dp" android:orientation="horizontal">
                 <Button android:id="@+id/openAccessibility" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="輔助使用" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
                 <Button android:id="@+id/stopPilot" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="立即停止" android:textAllCaps="false" android:background="@drawable/button_unselected"/>

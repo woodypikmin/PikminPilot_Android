@@ -46,13 +46,17 @@ public final class PilotController {
     private void run(PilotConfig cfg){
         try{
             requireService();
-            status("啟動 / 等待探險列表");
+            status("啟動 • 開始掃描探險列表");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
-                    " • speed="+(cfg.fast?"FAST":"STABLE"));
-            sleep(cfg.fast?450:700);
+                    " • speed="+(cfg.fast?"FAST":"STABLE")+
+                    " • handoffDelay=3000ms");
 
+            // START intentionally does not perform an Expedition-page precheck.
+            // The expected workflow is: keep Pikmin Bloom already open on the
+            // Expedition list, return to Pilot, press START, wait 3 seconds, then
+            // begin the normal cargo scan immediately.
             while(running.get()&&(cfg.dispatchTarget==0||completed<cfg.dispatchTarget)){
                 int round=completed+1;
                 status("第 "+round+" 輪：尋找"+PilotConfig.cargoName(cfg.cargoMode));
@@ -148,6 +152,8 @@ public final class PilotController {
     private CargoAndBitmap findCargo(PilotConfig cfg,int round)throws Exception{
         boolean down=true,reversed=false;int swipes=0;
         while(running.get()){
+            status("第 "+round+" 輪：掃描探險列表 • "+(down?"往下":"往上")+" "+(swipes+1)+"/9");
+            emit("ROUND "+round+" • capture → OCR/list detector • direction="+(down?"DOWN":"UP")+" • swipe="+swipes);
             Bitmap b=shot();
             CargoDetector.Result result=CargoDetector.scan(b);
             List<CargoDetector.Candidate> available=result.matching(cfg.cargoMode);
@@ -157,8 +163,14 @@ public final class PilotController {
             if(!available.isEmpty()) return new CargoAndBitmap(available.get(0),b);
 
             if(swipes>=8){
-                if(!reversed){reversed=true;down=false;swipes=0;emit("ROUND "+round+" • no matching AVAILABLE below; reversing list scan");}
-                else return null;
+                if(!reversed){
+                    reversed=true;down=false;swipes=0;
+                    status("第 "+round+" 輪：下方找不到，改往上掃描");
+                    emit("ROUND "+round+" • no matching AVAILABLE below; reversing list scan");
+                } else {
+                    status("第 "+round+" 輪：整份列表找不到符合條件的項目");
+                    return null;
+                }
             }
             RectF r=Detector.activeContentRect(b);float x=(float)(r.left+r.width()*0.52);
             float sy=(float)(r.top+r.height()*(down?0.77:0.35)),ey=(float)(r.top+r.height()*(down?0.35:0.77));

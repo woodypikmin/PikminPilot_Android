@@ -1,63 +1,78 @@
-# PikminPilot Android — Stage 11.5.4.31 Android Alpha
+# Pikmin Pilot Android — 0.2.0-alpha2
 
-這是依照你提供的 **PikminPilot Stage 11.5.4.31 iOS 專案**做的 Android 原生移植版。
+這版不是重新猜流程，而是依照原 iOS `Stage11_5_4_31_UNIVERSAL_POSTTAIL_TRANSITION_SETTLE` 的核心檔案移植：
 
-## 現在已經有的東西
+- `PilotOptions.swift` → Android 的搬運目標 / 皮克敏種類 / 最低數量規則
+- `FruitDetector.swift` → `CargoDetector.java`
+  - 水果名稱 OCR 白名單
+  - 花苗 `色花苗` 規則，以及 `冰藍花苗` / `大花苗` 例外
+  - 明確排除單獨的 `花苗` 分頁文字
+  - BUSY / COMPLETE card-first 阻擋
+  - OCR 推導低飽和花苗盆栽位置
+- `ImageAutomationDetector.swift` → `Detector.java`
+  - 前往探險按鈕
+  - 紫 / 白 / 粉紅 / 岩濾鏡列
+  - GO
+  - 搬運頁綠色 X
+- `PikminPilotRunnerUITests.swift` → Android Accessibility gesture
+  - 五欄 × 三列皮克敏自適應座標
+- `Stage8FullLoopController.swift` → `PilotController.java`
+  - 探險列表掃描 → 點水果/花苗 → 前往探險 → 左滑顏色列 → 選指定皮 → 選數量 → GO → 綠色 X → 確認回列表 → 下一輪
 
-- Android 原生 App（Java，Android 11 / API 30 起）
-- `AccessibilityService` 直接點擊與滑動
-- `AccessibilityService.takeScreenshot()` 畫面擷取
-- Active content / viewport 幾何偵測
-- 「前往探險」按鈕偵測
-- 紫 / 白 / 粉紅 / 岩石皮克敏 filter 偵測
-- 自適應 5 欄 × 3 列 Pikmin 選擇格
-- GO 按鈕偵測
-- 搬運畫面綠色 X 偵測、點擊、二次驗證
-- 多輪自動化 controller
-- GitHub Actions 自動產生 APK
+## UI
 
-## 與 iOS 11.5.4.31 的主要差異
+主畫面依 iOS `ContentView.swift` 的結構重做：
 
-iOS 版在探險清單使用 Apple Vision OCR，再配合 BUSY / COMPLETE 卡片框線判斷，才把水果或花苗視為可點擊。
+- Header / readiness
+- 搬運次數
+- 搬運目標：水果 / 花苗 / 水果＋花苗
+- 皮克敏：粉紅 / 白 / 紫 / 岩
+- 皮克敏數量 stepper
+- 穩定 / 快速
+- summary pills
+- START PILOT
+- 即時狀態與 diagnostics
 
-這個 Android 第一版目前把 iOS 原本的 **顏色 + connected-component 幾何**移植過來當 cargo fallback，所以清單辨識還沒有做到 iOS 那麼保守。換句話說：**critical tail（filter → N 隻 → GO → 綠 X）移植度較高；探險清單的水果/花苗安全判斷目前是 alpha。**
+## GitHub 產 APK
 
-第一次實機使用請先用少量派遣次數測試。
+1. 把本資料夾內容放在 GitHub repo 根目錄。
+2. GitHub → **Actions** → **Build Android APK** → **Run workflow**。
+3. Build 完成後下載 artifact：`PikminPilot-Android-debug`。
+4. 內含 `app-debug.apk`。
 
-## 直接用 GitHub 產 APK
+建立 `v0.2.0-alpha2` 之類的 tag 時，workflow 也會把 APK 掛到 GitHub Release。
 
-這個資料夾本身就是 repo root。
-
-1. 在 GitHub 建一個空 repo。
-2. 把這個資料夾全部上傳 / push 到 repo root。
-3. 進入 **Actions → Build Android APK → Run workflow**。
-4. Build 完後，在該次 workflow 的 **Artifacts** 下載 `PikminPilot-Android-debug`。
-5. 裡面就是可安裝的 `app-debug.apk`。
-
-如果 push `v0.1.0-alpha1` 之類的 tag，workflow 也會把 debug-signed、可直接安裝的 APK 掛到 GitHub Release。
-
-## Android 安裝後怎麼用
+## 使用方式
 
 1. 安裝 APK。
 2. 開啟 Pikmin Pilot。
-3. 按「開啟輔助使用設定」。
-4. 啟用 **Pikmin Pilot Automation**。
-5. 回 App 選皮克敏種類、數量與派遣次數。
-6. 按「開始 Pilot」。
-7. App 會開啟 `com.nianticlabs.pikmin`，之後由 Accessibility Service 持續截圖與操作。
+3. 點「輔助使用」，啟用 **Pikmin Pilot Automation**。
+4. 回 App 選擇搬運目標、皮克敏顏色、數量、搬運次數。
+5. 按 **START PILOT**。
 
-## 為什麼 Android 版不需要 iOS 那堆東西
+## 花苗路徑
 
-Android 這條路不需要：DDI、CoreDevice、RSD、DTX、XCTest Runner、pairing record、VPN tunnel 或 Apple signing。Android 11+ 的 AccessibilityService 已經可以直接取得 screenshot 並 dispatch gesture。
+花苗點入後不使用藍色圖形猜按鈕。它跟 iOS 11.5.4.19 一樣，用 OCR 尋找「前往探險」文字中心，點擊後再 OCR 確認「可以選擇最多…」選皮頁，確認成功才允許左滑顏色列。
 
-## 下一個應該補的功能
+## OCR
 
-把 `FruitDetector.swift` 裡的 OCR + BUSY/COMPLETE status-card 安全閘完整移植到 Android（例如 Android OCR/ML Kit），再用你的 Android 實機 screenshot 校正 thresholds。
+Android 使用 Google ML Kit Chinese Text Recognition，對應 iOS Vision OCR 的角色。第一次 build 需要 Gradle 從 Maven 下載依賴。
 
-## Build 基準
 
-- Android Gradle Plugin: `8.13.2`
-- Gradle: `8.13`
-- compileSdk: `36`
-- minSdk: `30`
-- Java: `17`
+
+## 0.2.2-alpha4：START 前景切換等待
+
+START 流程改為配合實際使用方式：先把 Pikmin Bloom 停在「探險」列表，再切回 Pikmin Pilot 按 START。Pilot 會先讓 Pikmin Bloom 回到前景，**固定等待 3 秒**，之後才做第一張截圖與水果／花苗掃描。
+
+這版已移除 START 時額外的「探險頁 precheck/OCR 確認」。也就是不會一切換 App 就立刻判斷畫面；3 秒內完全不做截圖、不點擊、不滑動。3 秒後直接按照使用者已預先開好探險頁的前提開始正常掃描。
+
+## 0.2.1-alpha3：START 與除錯流程
+
+這版修正了 alpha2 最容易造成「按 START 後像沒反應」的兩個問題：
+
+1. 切到 Pikmin Bloom 時不再丟掉 Pilot 的狀態/Log listener；回到 Pilot 可直接看到執行到哪一步。
+2. START 後先做 Expedition-list preflight。尚未辨識到「探險」列表前，Pilot **不會送任何 swipe / tap**。若一直無法確認，會明確失敗並提示先把遊戲停在探險列表。
+
+目前正確啟動方式：先開 Pikmin Bloom → 打開「探險」頁並停在三欄水果/花苗列表 → 用最近使用的 App 切回 Pikmin Pilot → 選設定 → START PILOT。Pilot 會切回遊戲、確認列表、開始 OCR/圖像掃描。
+
+正常一輪順序：探險列表 → 找 AVAILABLE 水果/花苗 → 點物品 → 前往探險 → 確認選皮頁 → 顏色列往左滑 → 指定紫/白/粉/岩 → 選指定數量 → GO → 綠色 X → 連續確認回到探險列表 → 下一輪。

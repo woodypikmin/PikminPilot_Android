@@ -71,7 +71,16 @@ public class MainActivity extends Activity implements PilotController.Listener {
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
-    @Override protected void onPause(){super.onPause();PilotController.get().setListener(null);}
+    @Override protected void onPause(){
+        // Keep the listener attached while Pikmin Bloom is in the foreground.
+        // The Activity still exists, so status/log lines continue to accumulate and
+        // are visible immediately when the user returns to Pilot.
+        super.onPause();
+    }
+    @Override protected void onDestroy(){
+        PilotController.get().setListener(null);
+        super.onDestroy();
+    }
 
     private void selectCargo(PilotConfig.CargoMode x){cargoMode=x;save();refreshUi();}
     private void selectType(PilotConfig.PikminType x){pikminType=x;enforceMinimum();save();refreshUi();}
@@ -103,7 +112,12 @@ public class MainActivity extends Activity implements PilotController.Listener {
         if(PilotAccessibilityService.get()==null){Toast.makeText(this,"請先啟用 Pikmin Pilot Automation 輔助使用服務",Toast.LENGTH_LONG).show();startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));return;}
         PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,runTarget(),fast);
         appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount);
-        openPikmin(); new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),900);
+        openPikmin();
+        // User workflow: leave Pikmin Bloom already open on the Expedition list,
+        // switch back to Pilot, then press START.  Do not inspect the screen during
+        // the Android app-switch animation: give Pikmin Bloom a full 3 seconds to
+        // return from background to foreground before the first screenshot.
+        new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),3000);
     }
 
     private void appendLog(String s){if(log.length()>14000)log.delete(0,5000);log.append(s).append('\n');logView.setText(log.toString());}
