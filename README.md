@@ -1,8 +1,8 @@
-# PikminPilot Android 0.2.5-alpha7
+# PikminPilot Android 0.2.6-alpha8
 
 Android port of the PikminPilot automation flow.
 
-## 0.2.5-alpha7 — Universal filter row + seedling CTA fallback
+## 0.2.6-alpha8 — Green-X tap reliability + universal filter row
 
 This build keeps the working 0.2.4 automation flow and changes only the two areas that were device-layout sensitive.
 
@@ -33,6 +33,15 @@ Useful log lines:
 
 OCR also tolerates simplified/traditional variants, one damaged character, and split `前往` + `探險` line boxes.
 
+### Green X reliability fix
+- Waits for the carrying page to settle before the first tap.
+- Re-detects and refines the tap point toward the white X.
+- Maps screenshot coordinates into actual display coordinates before dispatching the gesture.
+- Uses a longer press and safe in-button retry offsets.
+- Logs `GREEN X TAP #...` with screenshot/display coordinates and `COMPLETED/CANCELLED/REJECTED`.
+- Verifies the Expedition list actually returned before counting the round complete.
+
+
 ## Expected workflow
 
 1. Leave Pikmin Bloom open on the Expedition list.
@@ -48,5 +57,5 @@ Push the repository to GitHub and run **Actions → Build Android APK → Run wo
 On app launch the log should contain:
 
 ```text
-BUILD 0.2.5-alpha7 • universal filter-row detector • seedling CTA OCR+geometry
+BUILD 0.2.6-alpha8 • green-X mapped tap + settle/retry • universal filter row
 ```

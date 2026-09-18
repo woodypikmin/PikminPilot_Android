@@ -47,7 +47,7 @@ public final class PilotController {
         try{
             requireService();
             status("啟動 • 開始掃描探險列表");
-            emit("BUILD 0.2.5-alpha7 • UNIVERSAL FILTER ROW • seedling CTA OCR+geometry");
+            emit("BUILD 0.2.6-alpha8 • GREEN-X mapped tap + settle/retry • universal filter row");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -127,14 +127,7 @@ public final class PilotController {
                 status("第 "+round+" 輪：關閉傳送頁面綠色 X");
                 PointAndBitmap close=waitPoint("綠色 X",10,cfg.fast?90:130,Detector::detectCarryingClose);
                 if(close==null) throw new RuntimeException("傳送頁面綠色 X 未辨識到");
-                boolean closed=false; PointF closePoint=close.p;
-                for(int attempt=1;attempt<=3&&running.get();attempt++){
-                    tap(closePoint.x,closePoint.y,55);
-                    sleep(cfg.fast?150:220);
-                    if(waitForExpeditionList(cfg.fast?6:8,cfg.fast?130:190)){closed=true;break;}
-                    Bitmap b=shot(); PointF p=Detector.detectCarryingClose(b); if(p!=null)closePoint=p;
-                }
-                if(!closed) throw new RuntimeException("按下綠色 X 後，未確認回到探險列表");
+                if(!closeGreenX(close,cfg)) throw new RuntimeException("GREEN X 已辨識，但點擊後未確認回到探險列表");
 
                 completed++;
                 emit("ROUND "+round+" COMPLETED ✅ • total="+completed);
@@ -244,6 +237,74 @@ public final class PilotController {
         return false;
     }
 
+    /**
+     * The close button can become visible slightly before Pikmin Bloom accepts
+     * input.  Also, some Android devices expose a screenshot buffer whose pixel
+     * size differs from the gesture display space.  Re-sample after a short
+     * settle, map screenshot coordinates into display coordinates, and verify
+     * the screen actually left the carrying page before declaring success.
+     */
+    private boolean closeGreenX(PointAndBitmap initial,PilotConfig cfg)throws Exception{
+        PointF closePoint=initial.p;
+        Bitmap closeFrame=initial.b;
+
+        // The X is often visible during the end of the send animation before it
+        // is touchable.  Do not fire the gesture on the first rendered frame.
+        sleep(cfg.fast?420:620);
+        Bitmap settled=shot();
+        PointF settledPoint=Detector.detectCarryingClose(settled);
+        if(settledPoint!=null){
+            closePoint=Detector.refineCarryingCloseTapPoint(settled,settledPoint);
+            closeFrame=settled;
+            emit("GREEN X STABLE ✅ • px=("+Math.round(closePoint.x)+","+Math.round(closePoint.y)+")");
+        }else{
+            closePoint=Detector.refineCarryingCloseTapPoint(closeFrame,closePoint);
+            emit("GREEN X STABLE FRAME miss ⚠️ • using last detected px=("+Math.round(closePoint.x)+","+Math.round(closePoint.y)+")");
+        }
+
+        // Keep retries slow enough for the game to finish its transition.  The
+        // small offsets remain inside the round X hit target and help if a
+        // gradient-only component produced a slightly biased visual centre.
+        final float[][] offsets={{0f,0f},{0.010f,0f},{-0.010f,0f},{0f,0.006f},{0f,-0.006f}};
+        for(int attempt=1;attempt<=offsets.length&&running.get();attempt++){
+            float sx=closePoint.x+closeFrame.getWidth()*offsets[attempt-1][0];
+            float sy=closePoint.y+closeFrame.getHeight()*offsets[attempt-1][1];
+            sx=Math.max(1,Math.min(closeFrame.getWidth()-2,sx));
+            sy=Math.max(1,Math.min(closeFrame.getHeight()-2,sy));
+
+            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(closeFrame,sx,sy,cfg.fast?95:120)
+                    .get(4,TimeUnit.SECONDS);
+            emit("GREEN X TAP #"+attempt+" • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
+                    tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
+                    tr.displayWidth+"×"+tr.displayHeight+" • dispatch="+
+                    (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
+
+            if(!tr.accepted||!tr.completed){
+                sleep(cfg.fast?260:420);
+                continue;
+            }
+
+            sleep(cfg.fast?480:700);
+            if(waitForExpeditionList(cfg.fast?6:8,cfg.fast?150:210)) return true;
+
+            Bitmap b=shot();
+            PointF p=Detector.detectCarryingClose(b);
+            if(p==null){
+                emit("GREEN X no longer visible • waiting for expedition list before another tap");
+                if(waitForExpeditionList(cfg.fast?6:9,cfg.fast?180:240)) return true;
+                // Do not tap a stale point on an unknown transition frame.  Give
+                // the UI one more chance to settle, then re-detect.
+                sleep(cfg.fast?300:500);
+                b=shot(); p=Detector.detectCarryingClose(b);
+                if(p==null) continue;
+            }
+            closeFrame=b;
+            closePoint=Detector.refineCarryingCloseTapPoint(b,p);
+            emit("GREEN X still visible • retry center=("+Math.round(closePoint.x)+","+Math.round(closePoint.y)+")");
+        }
+        return false;
+    }
+
     private boolean waitForExpeditionList(int attempts,long delay)throws Exception{
         int streak=0;
         for(int i=0;i<attempts&&running.get();i++){
@@ -332,7 +393,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.2.5-alpha7 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.2.6-alpha8 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

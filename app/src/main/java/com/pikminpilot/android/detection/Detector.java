@@ -376,6 +376,38 @@ public final class Detector {
         return bestPoint;
     }
 
+    /**
+     * Refine the coloured-background component centre to the white X itself.
+     * Gradient fills can make the green mask occupy only one side of the round
+     * button on some displays; the white cross is a better tap target.
+     */
+    public static PointF refineCarryingCloseTapPoint(Bitmap b, PointF approx) {
+        if(approx==null) return null;
+        int w=b.getWidth(), h=b.getHeight();
+        int radius=Math.max(20,(int)(Math.min(w,h)*0.070));
+        int x0=Math.max(0,(int)approx.x-radius), x1=Math.min(w-1,(int)approx.x+radius);
+        int y0=Math.max(0,(int)approx.y-radius), y1=Math.min(h-1,(int)approx.y+radius);
+        double sx=0,sy=0,sw=0;
+        for(int y=y0;y<=y1;y++) for(int x=x0;x<=x1;x++) {
+            Hsv v=hsv(b.getPixel(x,y));
+            if(v.s<=0.22&&v.v>=0.78) {
+                double dx=x-approx.x,dy=y-approx.y;
+                double d2=dx*dx+dy*dy;
+                if(d2>radius*radius) continue;
+                // Prefer white pixels close to the detected green component so
+                // nearby flowers/text do not pull the point away from the X.
+                double weight=1.0/(1.0+d2/(radius*radius*0.20));
+                sx+=x*weight; sy+=y*weight; sw+=weight;
+            }
+        }
+        if(sw<8.0) return approx;
+        PointF refined=new PointF((float)(sx/sw),(float)(sy/sw));
+        float maxShift=radius*0.50f;
+        float dx=refined.x-approx.x,dy=refined.y-approx.y;
+        if(dx*dx+dy*dy>maxShift*maxShift) return approx;
+        return refined;
+    }
+
     public static List<PointF> detectPikminSelectionGrid(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         double[] cols={0.129,0.313,0.492,0.672,0.849};
