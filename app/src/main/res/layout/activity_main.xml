@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/bg_grouped" android:fillViewport="true">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:paddingLeft="16dp" android:paddingRight="16dp"
+        android:paddingTop="12dp" android:paddingBottom="28dp">
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="Pikmin Pilot" android:textColor="@color/text_primary" android:textSize="17sp"
+            android:textStyle="bold" android:gravity="center" android:paddingBottom="10dp"/>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:background="@drawable/header_bg" android:padding="16dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+                <TextView android:layout_width="48dp" android:layout_height="48dp" android:text="🌱"
+                    android:textSize="34sp" android:gravity="center"/>
+                <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical" android:paddingLeft="8dp">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Pikmin Pilot" android:textSize="22sp" android:textStyle="bold" android:textColor="@color/text_primary"/>
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Android • Stage 11.5.4.31 logic port" android:textSize="13sp" android:textColor="@color/text_secondary"/>
+                </LinearLayout>
+            </LinearLayout>
+            <TextView android:id="@+id/serviceStatus" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:background="@drawable/pill_bg" android:text="Accessibility …" android:textColor="@color/text_primary" android:textSize="12sp"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp"
+                android:text="Android 版直接用輔助使用服務完成螢幕截圖、辨識、點擊與滑動。正常使用只要啟用一次 Accessibility，再按 START PILOT。"
+                android:textColor="@color/text_secondary" android:textSize="12sp"/>
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+            android:orientation="vertical" android:background="@drawable/card_bg" android:padding="16dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="☷  Pilot 設定" android:textStyle="bold" android:textSize="17sp" android:textColor="@color/text_primary"/>
+                <TextView android:id="@+id/speedBadge" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/pill_bg" android:text="STABLE" android:textStyle="bold" android:textSize="11sp" android:textColor="@color/pilot_green"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:orientation="vertical" android:background="@drawable/inner_bg" android:padding="14dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="搬運次數" android:textStyle="bold" android:textSize="15sp"/>
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="完成一顆並回列表 = 1 次" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+                    </LinearLayout>
+                    <Spinner android:id="@+id/runMode" android:layout_width="120dp" android:layout_height="48dp"/>
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" android:background="@color/divider"/>
+
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="搬運目標" android:textStyle="bold" android:textSize="15sp"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="44dp" android:layout_marginTop="8dp" android:orientation="horizontal">
+                    <Button android:id="@+id/cargoFruit" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="水果" android:textAllCaps="false" android:background="@drawable/button_selected"/>
+                    <Button android:id="@+id/cargoSeedling" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="花苗" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                    <Button android:id="@+id/cargoBoth" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="水果＋花苗" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                </LinearLayout>
+                <TextView android:id="@+id/cargoHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp"
+                    android:text="沿用 iOS FruitDetector 的水果 card-first AVAILABLE 判定。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" android:background="@color/divider"/>
+
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="皮克敏種類" android:textStyle="bold" android:textSize="15sp"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="64dp" android:layout_marginTop="7dp" android:orientation="horizontal">
+                    <Button android:id="@+id/typePink" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="●\n粉紅皮" android:textColor="@color/pink" android:textAllCaps="false" android:background="@drawable/button_selected"/>
+                    <Button android:id="@+id/typeWhite" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="5dp" android:text="○\n白皮" android:textColor="#777777" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                    <Button android:id="@+id/typePurple" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="5dp" android:text="●\n紫皮" android:textColor="@color/purple" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                    <Button android:id="@+id/typeRock" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="5dp" android:text="●\n岩皮" android:textColor="@color/rock" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                </LinearLayout>
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:gravity="center_vertical">
+                    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                        <TextView android:id="@+id/countTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="每輪 粉紅皮克敏" android:textStyle="bold"/>
+                        <TextView android:id="@+id/countHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="最低 6 隻；每次 Run 固定同一數量" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+                    </LinearLayout>
+                    <Button android:id="@+id/countMinus" android:layout_width="42dp" android:layout_height="42dp" android:text="−" android:textSize="20sp" android:background="@drawable/button_unselected"/>
+                    <TextView android:id="@+id/pikminCount" android:layout_width="64dp" android:layout_height="42dp" android:gravity="center" android:text="12 隻" android:textStyle="bold" android:textSize="18sp"/>
+                    <Button android:id="@+id/countPlus" android:layout_width="42dp" android:layout_height="42dp" android:text="＋" android:textSize="18sp" android:background="@drawable/button_unselected"/>
+                </LinearLayout>
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" android:background="@color/divider"/>
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="速度" android:textStyle="bold" android:textSize="15sp"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="44dp" android:layout_marginTop="8dp" android:orientation="horizontal">
+                    <Button android:id="@+id/speedStable" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="穩定" android:textAllCaps="false" android:background="@drawable/button_selected"/>
+                    <Button android:id="@+id/speedFast" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="快速" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                </LinearLayout>
+                <TextView android:id="@+id/speedHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="穩定模式沿用目前已驗證的等待節奏。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:orientation="horizontal">
+                <TextView android:id="@+id/summaryRun" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/pill_bg" android:text="5 顆" android:textSize="12sp"/>
+                <TextView android:id="@+id/summaryCargo" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="6dp" android:background="@drawable/pill_bg" android:text="水果" android:textSize="12sp"/>
+                <TextView android:id="@+id/summaryPikmin" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="6dp" android:background="@drawable/pill_bg" android:text="粉紅皮×12" android:textSize="12sp"/>
+            </LinearLayout>
+
+            <Button android:id="@+id/startPilot" android:layout_width="match_parent" android:layout_height="54dp" android:layout_marginTop="14dp" android:text="START PILOT" android:textStyle="bold" android:textColor="#FFFFFF" android:textSize="16sp" android:background="@drawable/button_primary"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="開始前：先讓 Pikmin Bloom 停在『探險』三欄列表，再切回這裡按 START。新版會先確認列表，確認前不會亂滑或亂點。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/openAccessibility" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="輔助使用" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                <Button android:id="@+id/stopPilot" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="立即停止" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:orientation="vertical" android:background="@drawable/card_bg" android:padding="16dp">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="即時狀態" android:textStyle="bold" android:textSize="17sp"/>
+            <TextView android:id="@+id/runStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="尚未執行" android:textSize="15sp" android:textColor="@color/text_primary"/>
+            <Button android:id="@+id/testScreenshot" android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="10dp" android:text="DEBUG • 截圖＋辨識測試" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+            <Button android:id="@+id/openPikmin" android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="7dp" android:text="開啟 Pikmin Bloom" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+            <TextView android:id="@+id/logView" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="120dp" android:layout_marginTop="10dp" android:padding="10dp" android:background="@drawable/inner_bg" android:text="" android:textColor="#444444" android:textSize="11sp" android:fontFamily="monospace"/>
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

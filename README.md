@@ -1,3 +1,9 @@
+# PikminPilot Android 0.2.3-alpha5-r1
+
+> Repacked verification build. On app open the log must show `BUILD 0.2.3-alpha5-r1`.
+> When the selection color row is swiped, the log prints `FILTER ROW SWIPE` with frame and exact pixel coordinates.
+> Green-X detection prints every failed scan attempt and prints exact pixel + normalized coordinates when found.
+
 # Pikmin Pilot Android — 0.2.0-alpha2
 
 這版不是重新猜流程，而是依照原 iOS `Stage11_5_4_31_UNIVERSAL_POSTTAIL_TRANSITION_SETTLE` 的核心檔案移植：
@@ -76,3 +82,9 @@ START 流程改為配合實際使用方式：先把 Pikmin Bloom 停在「探險
 目前正確啟動方式：先開 Pikmin Bloom → 打開「探險」頁並停在三欄水果/花苗列表 → 用最近使用的 App 切回 Pikmin Pilot → 選設定 → START PILOT。Pilot 會切回遊戲、確認列表、開始 OCR/圖像掃描。
 
 正常一輪順序：探險列表 → 找 AVAILABLE 水果/花苗 → 點物品 → 前往探險 → 確認選皮頁 → 顏色列往左滑 → 指定紫/白/粉/岩 → 選指定數量 → GO → 綠色 X → 連續確認回到探險列表 → 下一輪。
+
+## 0.2.3-alpha5：Android 選皮顏色列左滑座標修正
+
+Android 選皮頁不能直接照搬 iOS 的 `activeContentRect * 0.432`。在使用者提供的 912×2048 Android 截圖中，顏色圓圈中心約在 `y=826px`，也就是 `0.404H`；舊值會落在約 `885px`，已經進到第一排皮克敏卡片，因此滑不到顏色列。
+
+現在顏色列固定從螢幕的 `(0.88W, 0.404H)` 向左拖到 `(0.43W, 0.404H)`；重試時也使用同一條顏色列座標。執行紀錄會印出 `FILTER ROW SWIPE` 的實際像素座標，方便再校準不同 Android 機型。
