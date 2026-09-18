@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Pikmin Pilot</string>
+    <string name="accessibility_description">Captures the Pikmin Bloom screen and performs Pilot tap/swipe automation after you explicitly enable this service.</string>
+</resources>
