@@ -47,7 +47,7 @@ public final class PilotController {
         try{
             requireService();
             status("啟動 • 開始掃描探險列表");
-            emit("BUILD 0.2.6-alpha8 • GREEN-X mapped tap + settle/retry • universal filter row");
+            emit("BUILD 0.2.8-alpha10 • iOS 11.5.4.31 parity • frozen selection grid • fresh magenta filter anchors • card-first cargo safety");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -70,21 +70,21 @@ public final class PilotController {
 
                 status("第 "+round+" 輪：點擊"+(choice.item.kind==CargoDetector.Kind.SEEDLING?"花苗":"水果"));
                 emit("ROUND "+round+" • tap AVAILABLE • kind="+choice.item.kind+" • label="+choice.item.label);
-                tap(choice.item.center.x,choice.item.center.y,55);
+                tapMapped(choice.b,choice.item.center.x,choice.item.center.y,55,"CARGO");
                 sleep(cfg.fast?550:850);
 
                 status("第 "+round+" 輪：前往探險");
                 if(choice.item.kind==CargoDetector.Kind.SEEDLING){
                     PointAndBitmap expedition=waitSeedlingExpeditionCta(8,cfg.fast?220:320);
                     if(expedition==null) throw new RuntimeException("花苗：前往探險文字未辨識到");
-                    tap(expedition.p.x,expedition.p.y,55);
+                    tapMapped(expedition.b,expedition.p.x,expedition.p.y,55,"EXPEDITION CTA");
                     sleep(cfg.fast?1050:1450);
                     if(!confirmSelectionPage(6,cfg.fast?180:260))
                         throw new RuntimeException("花苗：已點前往探險，但選皮頁未確認");
                 }else{
                     PointAndBitmap expedition=waitPoint("前往探險",18,cfg.fast?240:380,Detector::detectExpeditionButton);
                     if(expedition==null) throw new RuntimeException("水果：前往探險按鈕未辨識到");
-                    tap(expedition.p.x,expedition.p.y,55);
+                    tapMapped(expedition.b,expedition.p.x,expedition.p.y,55,"EXPEDITION CTA");
                     sleep(cfg.fast?1450:2000);
                 }
 
@@ -106,22 +106,20 @@ public final class PilotController {
                     sleep(cfg.fast?280:420);
                 }
                 if(filter==null) throw new RuntimeException(PilotConfig.pikminName(cfg.type)+"皮克敏顏色圓圈未辨識到");
-                tap(filter.p.x,filter.p.y,55);
+                emit("PIKMIN FILTER TARGET ✅ • type="+PilotConfig.pikminName(cfg.type)+
+                        " • px=("+Math.round(filter.p.x)+","+Math.round(filter.p.y)+")"+
+                        " • norm=("+String.format(java.util.Locale.US,"%.3f",filter.p.x/Math.max(1f,filter.b.getWidth()))+","+
+                        String.format(java.util.Locale.US,"%.3f",filter.p.y/Math.max(1f,filter.b.getHeight()))+") • detector=iOS-magenta-pair");
+                tapMapped(filter.b,filter.p.x,filter.p.y,55,"PIKMIN FILTER");
                 sleep(cfg.fast?220:320);
 
                 status("第 "+round+" 輪：選擇 "+cfg.pikminCount+" 隻皮克敏");
-                Bitmap gridShot=shot();
-                List<PointF> grid=Detector.detectPikminSelectionGrid(gridShot);
-                if(grid.size()<cfg.pikminCount) throw new RuntimeException("皮克敏格線辨識失敗");
-                for(int i=0;i<cfg.pikminCount&&running.get();i++){
-                    PointF p=grid.get(i); tap(p.x,p.y,40); sleep(cfg.fast?25:40);
-                }
-                sleep(cfg.fast?90:150);
+                selectPikminExact(cfg,round);
 
                 status("第 "+round+" 輪：等待 GO 亮起");
                 PointAndBitmap go=waitPoint("GO",8,cfg.fast?60:90,Detector::detectActiveGo);
                 if(go==null) throw new RuntimeException("GO 未亮起 / 未辨識到");
-                tap(go.p.x,go.p.y,55);
+                tapMapped(go.b,go.p.x,go.p.y,55,"GO");
                 sleep(cfg.fast?420:560);
 
                 status("第 "+round+" 輪：關閉傳送頁面綠色 X");
@@ -176,7 +174,7 @@ public final class PilotController {
             }
             RectF r=Detector.activeContentRect(b);float x=(float)(r.left+r.width()*0.52);
             float sy=(float)(r.top+r.height()*(down?0.77:0.35)),ey=(float)(r.top+r.height()*(down?0.35:0.77));
-            swipe(x,sy,x,ey,420);swipes++;sleep(cfg.fast?350:550);
+            swipeMapped(b,x,sy,x,ey,420,"EXPEDITION LIST");swipes++;sleep(cfg.fast?350:550);
         }
         return null;
     }
@@ -235,6 +233,95 @@ public final class PilotController {
             sleep(delay);
         }
         return false;
+    }
+
+    /**
+     * iOS Stage 11.5.4.31 parity for Pikmin selection.
+     *
+     * The iOS Runner takes ONE clean screenshot before any Pikmin is selected,
+     * detects the 5-column x 3-row grid once, then freezes those points for the
+     * whole selection tail.  Do not re-detect the grid after row 1: selected-card
+     * highlights and oversized Decor (airplanes/cups/hats) change visual energy
+     * and can pull a fresh detector away from slot 6.
+     *
+     * Android keeps the extra N/MAX OCR acknowledgement, but retries the SAME
+     * frozen slot coordinate when a tap is not accepted.
+     */
+    private void selectPikminExact(PilotConfig cfg,int round)throws Exception{
+        final int desired=cfg.pikminCount;
+        Integer initial=readSelectedPikminCount();
+        int acknowledged=initial==null?0:Math.max(0,Math.min(desired,initial));
+        emit("PIKMIN COUNT START • requested="+desired+" • observed="+(initial==null?"OCR-MISS":initial));
+
+        // Match iOS selectPikminGrid(): one pristine frame, one grid, frozen points.
+        Bitmap referenceFrame=shot();
+        List<PointF> frozenGrid=Detector.detectPikminSelectionGrid(referenceFrame);
+        if(frozenGrid.size()<Math.min(12,Math.max(2,desired)))
+            throw new RuntimeException("皮克敏格線辨識失敗：clean-frame points="+frozenGrid.size());
+
+        StringBuilder gridLog=new StringBuilder("PIKMIN GRID FROZEN ✅ • ");
+        for(int i=0;i<Math.min(desired,frozenGrid.size());i++){
+            PointF p=frozenGrid.get(i);
+            if(i>0) gridLog.append(" | ");
+            gridLog.append(i+1).append("=(").append(Math.round(p.x)).append(',').append(Math.round(p.y)).append(')');
+        }
+        emit(gridLog.toString());
+
+        for(int index=acknowledged;index<desired&&running.get();index++){
+            final int expected=index+1;
+            final PointF frozen=frozenGrid.get(index);
+            boolean ack=false;
+
+            for(int attempt=1;attempt<=3&&running.get();attempt++){
+                // Use a current frame only for screenshot->display coordinate mapping;
+                // the source point itself remains the clean-frame iOS coordinate.
+                Bitmap mappingFrame=shot();
+                float sx=frozen.x * mappingFrame.getWidth()/Math.max(1f,referenceFrame.getWidth());
+                float sy=frozen.y * mappingFrame.getHeight()/Math.max(1f,referenceFrame.getHeight());
+                PilotAccessibilityService.TapResult tr=service.tapFromBitmap(mappingFrame,sx,sy,cfg.fast?90:115)
+                        .get(4,TimeUnit.SECONDS);
+                emit("PIKMIN TAP "+expected+"/"+desired+" #"+attempt+
+                        " • frozen=("+Math.round(frozen.x)+","+Math.round(frozen.y)+")"+
+                        " • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+") → display=("+
+                        Math.round(tr.displayX)+","+Math.round(tr.displayY)+") • dispatch="+
+                        (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
+                if(!tr.accepted||!tr.completed){
+                    sleep(cfg.fast?120:180);
+                    continue;
+                }
+
+                sleep(cfg.fast?125:190);
+                Integer observed=readSelectedPikminCount();
+                if(observed==null){
+                    sleep(cfg.fast?90:140);
+                    observed=readSelectedPikminCount();
+                }
+                if(observed!=null){
+                    emit("PIKMIN COUNT ACK • expected="+expected+" • observed="+observed);
+                    if(observed>=expected){ acknowledged=observed; ack=true; break; }
+                    emit("PIKMIN TAP MISS ⚠️ • slot="+expected+" • retrying SAME frozen iOS slot");
+                }else{
+                    emit("PIKMIN COUNT OCR MISS ⚠️ • slot="+expected+" • preserving frozen grid; no re-detect");
+                    ack=true; acknowledged=expected; break;
+                }
+            }
+            if(!ack) throw new RuntimeException("第 "+expected+" 隻皮克敏點擊未被遊戲接受");
+        }
+
+        sleep(cfg.fast?140:220);
+        Integer finalCount=readSelectedPikminCount();
+        if(finalCount!=null){
+            emit("PIKMIN COUNT FINAL • requested="+desired+" • observed="+finalCount);
+            if(finalCount!=desired) throw new RuntimeException("皮克敏數量不正確：要求 "+desired+"，畫面是 "+finalCount);
+        }else{
+            emit("PIKMIN COUNT FINAL • OCR-MISS ⚠️ • frozen-grid taps completed="+desired);
+        }
+    }
+
+    private Integer readSelectedPikminCount()throws Exception{
+        Bitmap b=shot();
+        try { return CargoDetector.selectedPikminCount(CargoDetector.recognize(b)); }
+        catch(Throwable t) { return null; }
     }
 
     /**
@@ -374,7 +461,23 @@ public final class PilotController {
                         " • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
             }
         }
-        swipe(fromX,y,toX,y,ms);
+        swipeMapped(frame,fromX,y,toX,y,ms,"FILTER ROW");
+    }
+
+    private void tapMapped(Bitmap frame,float x,float y,long ms,String label)throws Exception{
+        if(!running.get())throw new InterruptedException("stopped");
+        PilotAccessibilityService.TapResult tr=service.tapFromBitmap(frame,x,y,ms).get(4,TimeUnit.SECONDS);
+        emit(label+" TAP • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
+                tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
+                tr.displayWidth+"×"+tr.displayHeight+" • dispatch="+
+                (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
+        if(!tr.accepted||!tr.completed)throw new RuntimeException(label+" tap cancelled");
+    }
+
+    private void swipeMapped(Bitmap frame,float x1,float y1,float x2,float y2,long ms,String label)throws Exception{
+        if(!running.get())throw new InterruptedException("stopped");
+        if(!service.swipeFromBitmap(frame,x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))
+            throw new RuntimeException(label+" swipe cancelled");
     }
 
     private void swipe(float x1,float y1,float x2,float y2,long ms)throws Exception{if(!running.get())throw new InterruptedException("stopped");if(!service.swipe(x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))throw new RuntimeException("swipe cancelled");}
@@ -393,7 +496,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.2.6-alpha8 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.2.8-alpha10 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

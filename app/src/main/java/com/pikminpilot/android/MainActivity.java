@@ -68,7 +68,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.2.6-alpha8 • green-X mapped tap + settle/retry • universal filter row");
+        appendLog("BUILD 0.2.8-alpha10 • iOS 11.5.4.31 parity: frozen grid + magenta anchors + card-first safety");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}

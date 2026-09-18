@@ -20,6 +20,8 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -111,6 +113,10 @@ public final class CargoDetector {
         int w=b.getWidth(), h=b.getHeight();
         List<OcrItem> ocr=recognize(b);
         List<StatusCard> cards=detectStatusCards(b);
+        // Keep raw border bands too. They are the earliest card-first evidence
+        // and let Android conservatively block a candidate even if anti-aliasing
+        // prevents reconstruction of a complete/partial StatusCard rectangle.
+        List<Band> rawStatusBands=horizontalBands(b);
         List<Candidate> fruit=new ArrayList<>(), seed=new ArrayList<>(), blocked=new ArrayList<>();
 
         boolean[] mask=new boolean[w*h];
@@ -133,6 +139,13 @@ public final class CargoDetector {
             if(Math.abs(center.x-expected)>colWidth*0.30) continue;
 
             String label=nearbyLabel(c.rect,w,h,ocr);
+            // iOS FruitDetector is card-first: any BUSY/COMPLETE/partial-card
+            // evidence wins over object/OCR classification.  Keep the paired-card
+            // test above, and also reject a candidate when a raw status border in
+            // the same column sits inside this item's vertical envelope.  This is
+            // deliberately conservative for already-carried seedlings.
+            RectF labelProbe=labelRectNearObject(c.rect,w,h,ocr);
+            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,labelProbe)) continue;
             Kind kind=isKnownFruitLabel(label)?Kind.FRUIT:(isSeedlingLabel(label)?Kind.SEEDLING:Kind.UNKNOWN);
             Candidate candidate=new Candidate(center,c.rect,kind,label);
             if(kind==Kind.FRUIT) fruit.add(candidate); else if(kind==Kind.SEEDLING) seed.add(candidate); else blocked.add(candidate);
@@ -148,6 +161,7 @@ public final class CargoDetector {
             float cy=(float)Math.max(h*0.17, item.rect.top-h*0.070);
             PointF center=new PointF(cx,cy);
             if(insideAnyCardOrLabel(center,item.rect,cards)) continue;
+            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,item.rect)) continue;
             RectF rect=new RectF((float)(cx-w*0.060),(float)(cy-h*0.045),(float)(cx+w*0.060),(float)(cy+h*0.045));
             Candidate candidate=new Candidate(center,rect,Kind.SEEDLING,item.text);
             if(!containsNear(seed,candidate,w*0.10,h*0.08)) seed.add(candidate);
@@ -318,6 +332,36 @@ public final class CargoDetector {
         return false;
     }
 
+    /**
+     * Read Pikmin Bloom's live selection counter, e.g. "(6/10)".  This is
+     * deliberately independent from the grid detector: a gesture being
+     * dispatched does not prove the game accepted the tap.
+     */
+    public static Integer selectedPikminCount(List<OcrItem> items) {
+        if(items==null||items.isEmpty()) return null;
+        Pattern fraction=Pattern.compile("(?:\\(|（)?\\s*(\\d{1,2})\\s*[/／]\\s*(\\d{1,2})\\s*(?:\\)|）)?");
+        Integer fallback=null;
+        float maxY=maxBottom(items);
+        for(OcrItem i:items) {
+            if(i==null||i.text==null) continue;
+            String raw=i.text.replace('Ｏ','0').replace('O','0').replace('ｏ','0');
+            Matcher m=fraction.matcher(raw);
+            while(m.find()) {
+                int selected,max;
+                try { selected=Integer.parseInt(m.group(1)); max=Integer.parseInt(m.group(2)); } catch(Exception ignored) { continue; }
+                if(selected<0||max<2||max>40||selected>max) continue;
+                String t=normalize(raw).toLowerCase();
+                boolean strong=t.contains("皮克敏")||t.contains("最多")||t.contains("選擇")||t.contains("选择")||t.contains("select");
+                if(strong) return selected;
+                // ML Kit sometimes splits the counter away from the sentence.
+                // Accept a plausible fraction only from the upper half of the
+                // selection sheet, where the live counter is rendered.
+                if(i.rect.centerY()<=maxY*0.55f) fallback=selected;
+            }
+        }
+        return fallback;
+    }
+
     /** OCR fallback for locating the horizontal Pikmin colour-filter strip. */
     public static PointF filterRowHintPoint(List<OcrItem> items) {
         OcrItem automatic=null;
@@ -348,6 +392,38 @@ public final class CargoDetector {
         for(OcrItem i:ocr) if(i.rect.centerX()>=x0&&i.rect.centerX()<=x1&&i.rect.centerY()>=y0&&i.rect.centerY()<=y1) found.add(i);
         found.sort(Comparator.comparingDouble(i->i.rect.top));
         StringBuilder sb=new StringBuilder(); for(OcrItem i:found){if(sb.length()>0)sb.append(' ');sb.append(i.text);} return sb.toString();
+    }
+
+    /**
+     * Conservative Android reinforcement of the iOS card-first rule.  The iOS
+     * detector already treats an unpaired BUSY/COMPLETE horizontal border as a
+     * possible clipped card.  On some Android screenshots the matching vertical
+     * edge is anti-aliased enough that the full partial-card reconstruction can
+     * miss.  A raw same-column status border close to the candidate is still
+     * sufficient reason NOT to tap it.
+     */
+    private static boolean hasLocalStatusBorderEvidence(List<Band> bands,int h,int col,PointF center,RectF labelRect){
+        float top=Math.min(center.y,labelRect==null?center.y:labelRect.top)-h*0.095f;
+        float bottom=Math.max(center.y,labelRect==null?center.y:labelRect.bottom)+h*0.075f;
+        for(Band band:bands){
+            if(band.col!=col) continue;
+            double y=band.center();
+            if(y>=top&&y<=bottom) return true;
+        }
+        return false;
+    }
+
+    private static RectF labelRectNearObject(RectF object,int w,int h,List<OcrItem> ocr){
+        double colWidth=w/3.0;
+        int col=Math.min(2,Math.max(0,(int)(object.centerX()/colWidth)));
+        double x0=col*colWidth,x1=(col+1)*colWidth;
+        double y0=object.bottom-h*0.004,y1=Math.min(h,object.bottom+h*0.070);
+        RectF union=null;
+        for(OcrItem i:ocr){
+            if(i.rect.centerX()<x0||i.rect.centerX()>x1||i.rect.centerY()<y0||i.rect.centerY()>y1) continue;
+            if(union==null) union=new RectF(i.rect); else union.union(i.rect);
+        }
+        return union==null?new RectF(object):union;
     }
 
     private static boolean insideAnyCard(PointF p,List<StatusCard> cards){for(StatusCard c:cards){RectF r=new RectF(c.rect);r.inset(-8,-8);if(r.contains(p.x,p.y))return true;}return false;}

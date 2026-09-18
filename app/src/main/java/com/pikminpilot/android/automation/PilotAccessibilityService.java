@@ -146,6 +146,27 @@ public class PilotAccessibilityService extends AccessibilityService {
         return dispatch(g);
     }
 
+    /** Map a swipe measured on a screenshot into the gesture display space. */
+    public CompletableFuture<Boolean> swipeFromBitmap(Bitmap source,float x1,float y1,float x2,float y2,long durationMs) {
+        int sw=Math.max(1,source.getWidth()), sh=Math.max(1,source.getHeight());
+        Rect bounds;
+        try {
+            WindowManager wm=(WindowManager)getSystemService(WINDOW_SERVICE);
+            bounds=wm.getCurrentWindowMetrics().getBounds();
+        } catch(Throwable ignored) {
+            bounds=new Rect(0,0,sw,sh);
+        }
+        int dw=Math.max(1,bounds.width()), dh=Math.max(1,bounds.height());
+        float tx1=Math.max(bounds.left,Math.min(bounds.right-1f,bounds.left+x1*dw/sw));
+        float ty1=Math.max(bounds.top,Math.min(bounds.bottom-1f,bounds.top+y1*dh/sh));
+        float tx2=Math.max(bounds.left,Math.min(bounds.right-1f,bounds.left+x2*dw/sw));
+        float ty2=Math.max(bounds.top,Math.min(bounds.bottom-1f,bounds.top+y2*dh/sh));
+        Path p=new Path(); p.moveTo(tx1,ty1); p.lineTo(tx2,ty2);
+        GestureDescription g=new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(p,0,Math.max(80,durationMs))).build();
+        return dispatch(g);
+    }
+
     private CompletableFuture<Boolean> dispatch(GestureDescription g) {
         CompletableFuture<Boolean> f=new CompletableFuture<>();
         boolean accepted=dispatchGesture(g,new GestureResultCallback(){

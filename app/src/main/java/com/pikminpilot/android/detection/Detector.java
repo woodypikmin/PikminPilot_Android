@@ -268,67 +268,69 @@ public final class Detector {
         return new FilterRowGeometry(rowY,fromX,toX,spacing,bestChain.size());
     }
 
+    /**
+     * Direct Android port of ImageAutomationDetector.detectPikminFilter() from
+     * iOS Stage 11.5.4.31.  Purple and pink are the two magenta anchors; their
+     * separation is exactly two chip slots.  No generic colour-row spacing is
+     * blended into the final tap point, because that caused second-round drift
+     * on phones/accounts with different UI content.
+     */
     public static PointF detectPikminFilter(Bitmap b, PilotConfig.PikminType type) {
-        int w=b.getWidth(),h=b.getHeight();
-        FilterRowGeometry rowGeom=detectFilterRowGeometry(b);
+        int w=b.getWidth(), h=b.getHeight();
         RectF vp=activeContentRect(b);
-        double minDim=Math.max(1,Math.min(vp.width(),vp.height()));
-        int x0=Math.max(0,(int)(vp.left+vp.width()*0.08));
-        int x1=Math.min(w,(int)(vp.right-vp.width()*0.01));
-        int y0,y1;
-        if(rowGeom!=null){
-            y0=Math.max(0,(int)(rowGeom.y-minDim*0.070));
-            y1=Math.min(h,(int)(rowGeom.y+minDim*0.070));
-        }else{
-            // Broad fallback for unusual layouts.  Unlike alpha6 there is no
-            // midpoint bias toward one specific phone's row position.
-            y0=Math.max(0,(int)(h*0.18));
-            y1=Math.min(h,(int)(h*0.78));
-        }
+        double minDim=Math.max(1.0,Math.min(vp.width(),vp.height()));
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.12));
+        int x1=Math.min(w,(int)(vp.right-vp.width()*0.03));
+        int y0=Math.max(0,(int)(vp.top+vp.height()*0.22));
+        int y1=Math.min(h,(int)(vp.top+vp.height()*0.66));
 
         boolean[] mask=new boolean[w*h];
-        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
-            int color=b.getPixel(x,y); Hsv v=hsv(color);
-            int r=(color>>16)&255,g=(color>>8)&255,bl=color&255;
-            // Purple and pink are both magenta anchors.  Keep this intentionally
-            // broad; restricting it to the dynamically detected row removes the
-            // Pikmin-card false positives that forced alpha6 to use tighter hues.
-            if(v.h>=260&&v.h<=350&&v.s>=0.12&&v.v>=0.48&&r>g+10&&bl>g+4) mask[y*w+x]=true;
-        }
-        List<Component> cand=new ArrayList<>();
-        for(Component c:components(mask,w,h)) {
-            double wf=c.rect.width()/minDim,hf=c.rect.height()/minDim;
-            if(c.count>=minDim*minDim*0.00008&&wf>=0.016&&wf<=0.110&&hf>=0.012&&hf<=0.100) {
-                if(rowGeom==null||Math.abs(c.center().y-rowGeom.y)<=Math.max(14,minDim*0.060)) cand.add(c);
-            }
+        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++){
+            int color=b.getPixel(x,y);
+            Hsv v=hsv(color);
+            int r=(color>>16)&255, g=(color>>8)&255, bl=color&255;
+            boolean magenta=v.h>=278&&v.h<=332&&v.s>=0.16&&v.v>=0.58&&
+                    r>g+22&&bl>g+8;
+            if(magenta) mask[y*w+x]=true;
         }
 
-        PointF left=null,right=null; double best=Double.POSITIVE_INFINITY;
-        for(int i=0;i<cand.size();i++) for(int j=i+1;j<cand.size();j++) {
-            PointF a=cand.get(i).center(), bb=cand.get(j).center(); if(a.x>bb.x){PointF t=a;a=bb;bb=t;}
-            double dxv=bb.x-a.x, dyv=Math.abs(bb.y-a.y);
-            if(dyv>Math.max(minDim*0.045,10)) continue;
-            double expected=(rowGeom!=null?rowGeom.spacing*2.0:vp.width()*0.166);
-            double minDx=rowGeom!=null?rowGeom.spacing*1.35:vp.width()*0.07;
-            double maxDx=rowGeom!=null?rowGeom.spacing*2.70:vp.width()*0.31;
-            if(dxv<minDx||dxv>maxDx) continue;
-            double rowPenalty=rowGeom==null?0:Math.abs(((a.y+bb.y)*0.5-rowGeom.y))/Math.max(1.0,minDim);
-            double score=Math.abs(dxv-expected)/Math.max(1.0,expected)+(dyv/Math.max(1.0,minDim))*2.5+rowPenalty*2.0;
+        List<Component> candidates=new ArrayList<>();
+        for(Component c:components(mask,w,h)){
+            double wf=c.rect.width()/minDim, hf=c.rect.height()/minDim;
+            if(c.count<minDim*minDim*0.00012) continue;
+            if(wf<0.020||wf>0.115||hf<0.012||hf>0.090) continue;
+            candidates.add(c);
+        }
+
+        PointF left=null,right=null;
+        double best=Double.POSITIVE_INFINITY;
+        for(int i=0;i<candidates.size();i++) for(int j=i+1;j<candidates.size();j++){
+            PointF a=candidates.get(i).center(), bb=candidates.get(j).center();
+            if(a.x>bb.x){PointF t=a;a=bb;bb=t;}
+            double dx=bb.x-a.x, dy=Math.abs(bb.y-a.y);
+            if(dx<vp.width()*0.08||dx>vp.width()*0.30) continue;
+            if(dy>Math.max(minDim*0.045,8)) continue;
+            double spacingScore=Math.abs(dx/Math.max(1.0,vp.width())-0.166);
+            double verticalScore=dy/Math.max(1.0,vp.height());
+            double midY=(a.y+bb.y)*0.5;
+            double middleBias=Math.abs((midY-vp.centerY())/Math.max(1.0,vp.height()))*0.12;
+            double score=spacingScore+verticalScore*2.5+middleBias;
             if(score<best){best=score;left=a;right=bb;}
         }
-        if(left==null) return null;
-        float spacing=(right.x-left.x)*0.5f, row=(left.y+right.y)*0.5f;
-        if(rowGeom!=null&&rowGeom.spacing>4) spacing=(spacing+rowGeom.spacing)*0.5f;
+        if(left==null||right==null) return null;
+
+        float spacing=(right.x-left.x)*0.5f;
+        float rowY=(left.y+right.y)*0.5f;
         float tx;
         switch(type){
             case PURPLE: tx=left.x; break;
             case WHITE: tx=left.x+spacing; break;
             case PINK: tx=right.x; break;
             case ROCK: tx=right.x+spacing; break;
-            default:return null;
+            default: return null;
         }
-        if(tx<vp.left+2||tx>vp.right-2) return null;
-        return new PointF(tx,row);
+        if(tx>=vp.right-Math.max(2,minDim*0.01)) return null;
+        return new PointF(tx,rowY);
     }
 
     public static PointF detectActiveGo(Bitmap b) {
