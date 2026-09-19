@@ -154,11 +154,10 @@ public final class CargoDetector {
             // test above, and also reject a candidate when a raw status border in
             // the same column sits inside this item's vertical envelope.  This is
             // deliberately conservative for already-carried seedlings.
-            RectF labelProbe=labelRectNearObject(c.rect,w,h,ocr);
-            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,labelProbe)) {
-                diagnostics.add("SKIP[STATUS_BORDER] label="+label+" col="+col+" y="+Math.round(center.y));
-                continue;
-            }
+            // Match the iOS card-first rule exactly: only a reconstructed
+            // BUSY/COMPLETE/partial card can block this item. A lone horizontal
+            // border in the same column is not enough because it can belong to
+            // the carried card directly above/below a different valid seedling.
             Kind kind=isKnownFruitLabel(label)?Kind.FRUIT:(isSeedlingLabel(label)?Kind.SEEDLING:Kind.UNKNOWN);
             Candidate candidate=new Candidate(center,c.rect,kind,label);
             if(kind==Kind.FRUIT) { fruit.add(candidate); diagnostics.add("ACCEPT[FRUIT] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")"); }
@@ -182,10 +181,9 @@ public final class CargoDetector {
                 diagnostics.add("SKIP[SEEDLING_STATUS_CARD] "+item.text+" col="+col+" y="+Math.round(center.y));
                 continue;
             }
-            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,item.rect)) {
-                diagnostics.add("SKIP[SEEDLING_STATUS_BORDER] "+item.text+" col="+col+" y="+Math.round(center.y));
-                continue;
-            }
+            // Do not apply a broad same-column status-band exclusion here.
+            // iOS only blocks OCR seedlings when the inferred centre/label
+            // overlaps a reconstructed status card.
             RectF rect=new RectF((float)(cx-w*0.060),(float)(cy-h*0.045),(float)(cx+w*0.060),(float)(cy+h*0.045));
             Candidate candidate=new Candidate(center,rect,Kind.SEEDLING,item.text);
             if(!containsNear(seed,candidate,w*0.10,h*0.08)) {

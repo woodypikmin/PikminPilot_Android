@@ -34,9 +34,9 @@ public final class PilotController {
     private final java.util.ArrayDeque<RecentDispatch> recentDispatches=new java.util.ArrayDeque<>();
 
     private static final class RecentDispatch {
-        final CargoDetector.Kind kind; final String label; final float nx,ny; final int round;
-        RecentDispatch(CargoDetector.Kind kind,String label,float nx,float ny,int round){
-            this.kind=kind;this.label=label==null?"":label.replaceAll("\\s+","");this.nx=nx;this.ny=ny;this.round=round;
+        final CargoDetector.Kind kind; final String key; final float nx,ny; final int round;
+        RecentDispatch(CargoDetector.Kind kind,String key,float nx,float ny,int round){
+            this.kind=kind;this.key=key;this.nx=nx;this.ny=ny;this.round=round;
         }
     }
 
@@ -58,7 +58,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.1-alpha13 • diagnostic log • 30% list swipe • reusable OCR • white-X structural ACK • recent-dispatch latch");
+            emit("BUILD 0.3.2-alpha14 • anchored filter row • anchored Green-X • iOS card-only blocking • exact recent-dispatch latch");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -141,8 +141,12 @@ public final class PilotController {
             CargoDetector.Result result=CargoDetector.scan(b);
             List<CargoDetector.Candidate> available=result.matching(cfg.cargoMode);
             int beforeRecent=available.size();
-            available.removeIf(c->isRecentDispatch(c,b,round));
-            if(beforeRecent!=available.size()) emit("SCAN-DIAG SKIP[RECENT_DISPATCH_LATCH] count="+(beforeRecent-available.size()));
+            available.removeIf(c->isExactRecentDispatch(c,b,round));
+            if(beforeRecent!=available.size())
+                emit("SCAN-DIAG SKIP[EXACT_RECENT_DISPATCH] count="+(beforeRecent-available.size()));
+            // This latch is intentionally very narrow. It only blocks the same
+            // normalized label at essentially the same screen slot; neighbouring
+            // seedlings are left to the current-frame card detector.
             int busy=0,complete=0,statusBlocked=0;for(CargoDetector.StatusCard c:result.cards){if(c.state==CargoDetector.CardState.BUSY)busy++;else if(c.state==CargoDetector.CardState.COMPLETE)complete++;else statusBlocked++;}
             emit("ROUND "+round+" SCAN • FRUIT="+result.fruits.size()+" • SEEDLING="+result.seedlings.size()+
                     " • MATCH="+available.size()+" • BUSY="+busy+" • COMPLETE="+complete+" • STATUS_BLOCKED="+statusBlocked+
@@ -214,8 +218,14 @@ public final class PilotController {
 
         for(int i=0;i<attempts&&running.get();i++){
             Bitmap b=shot();
-            List<CargoDetector.OcrItem> ocr;
-            try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
+            List<CargoDetector.OcrItem> ocr=java.util.Collections.emptyList();
+            // Geometry is the fast primary path. OCR is intentionally sampled
+            // only when geometry has not settled, because ML Kit can cost
+            // multiple seconds on some phones.
+            boolean sampleOcr=(taps>0 && (i%2==0)) || (taps==0 && i>=3 && (i%3==0));
+            if(sampleOcr){
+                try{ocr=CargoDetector.recognize(b);}catch(Throwable ignored){}
+            }
 
             String proof=selectionPageProof(b,ocr,cfg.type);
             if(proof!=null){
@@ -295,12 +305,8 @@ public final class PilotController {
             if(CargoDetector.filterRowHintPoint(ocr)!=null) return "decor/auto-row-label";
         }catch(Throwable ignored){}
         try{
-            // A valid purple/pink magenta pair is highly specific to the Pikmin
-            // filter row and is stronger than the generic coloured-row geometry.
-            PointF p=Detector.detectPikminFilter(b,target);
-            if(p!=null) return "requested-filter-magenta-pair";
-            p=Detector.detectPikminFilter(b,PilotConfig.PikminType.PINK);
-            if(p!=null) return "pink-magenta-pair";
+            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
+            if(row!=null&&row.chipCount>=5) return "filter-row-geometry";
         }catch(Throwable ignored){}
         return null;
     }
@@ -310,25 +316,49 @@ public final class PilotController {
      * only reveal/scroll it if the requested chip is not already visible.
      */
     private PointAndBitmap findPikminFilterAdaptive(PilotConfig cfg,int round)throws Exception{
-        Bitmap first=shot();
-        PointF p=Detector.detectPikminFilter(first,cfg.type);
-        if(p!=null){
-            emit("PIKMIN FILTER DIRECT ✅ • round="+round+" • no swipe needed");
-            return new PointAndBitmap(p,first);
-        }
+        Bitmap frame=shot();
 
-        for(int a=0;a<5&&running.get();a++){
-            status("第 "+round+" 輪：展開皮克敏顏色列");
-            Bitmap before=(a==0?first:shot());
-            swipeFilterRowLeft(before,a==0?380:340);
-            sleep(cfg.fast?280:420);
-            Bitmap after=shot();
-            p=Detector.detectPikminFilter(after,cfg.type);
-            if(p!=null){
-                emit("PIKMIN FILTER AFTER SWIPE ✅ • attempt="+(a+1)+"/5");
-                return new PointAndBitmap(p,after);
+        for(int attempt=0;attempt<6&&running.get();attempt++){
+            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(frame);
+            PointF hint=null;
+            String rowSource="none";
+
+            if(row!=null&&row.chipCount>=5){
+                hint=new PointF(frame.getWidth()*0.50f,row.y);
+                rowSource="chip-row";
+            }else{
+                try{
+                    PointF ocrHint=CargoDetector.filterRowHintPoint(CargoDetector.recognize(frame));
+                    if(ocrHint!=null){
+                        hint=ocrHint;
+                        rowSource="ocr-decor/auto";
+                    }
+                }catch(Throwable ignored){}
             }
-            emit("PIKMIN FILTER MISS • attempt="+(a+1)+"/5");
+
+            if(hint!=null){
+                float tolerance=Math.max(frame.getHeight()*0.028f,
+                        row!=null?Math.max(24f,row.spacing*0.70f):frame.getHeight()*0.036f);
+                PointF p=Detector.detectPikminFilterNearRow(frame,cfg.type,hint.y,tolerance);
+                if(p!=null){
+                    emit("FILTER ROW LOCK ✅ • source="+rowSource+
+                            " • rowY="+Math.round(hint.y)+
+                            " • targetY="+Math.round(p.y)+
+                            " • dy="+Math.round(Math.abs(p.y-hint.y)));
+                    emit((attempt==0?"PIKMIN FILTER DIRECT ✅":"PIKMIN FILTER AFTER SWIPE ✅")+
+                            " • round="+round+" • attempt="+(attempt+1)+"/6");
+                    return new PointAndBitmap(p,frame);
+                }
+                emit("FILTER ROW LOCK • source="+rowSource+" • row found but requested chip pair not found");
+            }else{
+                emit("FILTER ROW LOCK MISS ⚠️ • no reliable chip-row anchor; refusing broad magenta guess");
+            }
+
+            if(attempt>=5)break;
+            status("第 "+round+" 輪：展開皮克敏顏色列");
+            swipeFilterRowLeft(frame,attempt==0?330:300);
+            sleep(cfg.fast?230:340);
+            frame=shot();
         }
         return null;
     }
@@ -379,126 +409,128 @@ public final class PilotController {
      * the screen actually left the carrying page before declaring success.
      */
     private boolean closeGreenX(PointAndBitmap initial,PilotConfig cfg)throws Exception{
-        // Never tap from one lone green-ish frame. Re-acquire the white-X glyph
-        // and require a stable centre before sending input. This is the Android
-        // equivalent of the later iOS white-X-first post-tail verifier.
-        PointF stablePoint=null,previous=initial.p; Bitmap stableFrame=null; int streak=0; String source="none";
-        float tolerance=Math.max(10f,Math.min(initial.b.getWidth(),initial.b.getHeight())*0.035f);
-        for(int i=0;i<6&&running.get();i++){
-            sleep(i==0?(cfg.fast?160:240):(cfg.fast?90:130));
+        // The close button is fixed to Pikmin Bloom's bottom-left control area.
+        // Keep every verification anchored to the first real candidate so a
+        // decorative white X elsewhere can never replace the tap target.
+        PointF anchor=initial.p;
+        Bitmap anchorFrame=initial.b;
+        float shortEdge=Math.min(initial.b.getWidth(),initial.b.getHeight());
+        float tolerance=Math.max(24f,shortEdge*0.055f);
+        int stable=1;
+
+        for(int i=0;i<5&&running.get()&&stable<2;i++){
+            sleep(cfg.fast?110:170);
             Bitmap b=shot();
-            PointF p=Detector.detectCarryingCloseGlyph(b);
-            String src="WHITE-X"; int needed=2;
-            if(p==null){ p=Detector.detectCarryingClose(b); src="GREEN-FALLBACK"; needed=3; }
-            if(p==null){
-                streak=0; previous=null;
-                emit("GREEN X VERIFY • frame="+(i+1)+"/6 • no structural X");
-                if(waitForExpeditionList(2,cfg.fast?100:140)){
-                    emit("GREEN X already gone ✅ • expedition list ACK");
-                    return true;
-                }
-                continue;
-            }
-            if(previous!=null&&Math.hypot(p.x-previous.x,p.y-previous.y)<=tolerance)streak++;else streak=1;
-            previous=p;
-            emit("GREEN X VERIFY • frame="+(i+1)+"/6 • source="+src+" • streak="+streak+"/"+needed+
-                    " • px=("+Math.round(p.x)+","+Math.round(p.y)+")");
-            if(streak>=needed){
-                stablePoint="WHITE-X".equals(src)?p:Detector.refineCarryingCloseTapPoint(b,p);
-                stableFrame=b;source=src;break;
+            PointF p=Detector.detectCarryingClose(b);
+            if(p!=null&&Math.hypot(p.x-anchor.x,p.y-anchor.y)<=tolerance){
+                stable++;
+                anchor=new PointF((anchor.x+p.x)*0.5f,(anchor.y+p.y)*0.5f);
+                anchorFrame=b;
+                emit("GREEN X VERIFY • anchored • streak="+stable+"/2 • px=("+
+                        Math.round(anchor.x)+","+Math.round(anchor.y)+")");
+            }else{
+                if(p!=null) emit("GREEN X VERIFY • rejected jump • candidate=("+
+                        Math.round(p.x)+","+Math.round(p.y)+") anchor=("+
+                        Math.round(anchor.x)+","+Math.round(anchor.y)+")");
+                else emit("GREEN X VERIFY • anchored target not present yet");
+                stable=0;
             }
         }
-        if(stablePoint==null||stableFrame==null){
-            emit("GREEN X REJECTED ⚠️ • detector never produced a stable structural target");
+        if(stable<2){
+            emit("GREEN X REJECTED ⚠️ • no stable bottom-left anchored target");
             return false;
         }
-        emit("GREEN X STABLE ✅ • source="+source+" • px=("+Math.round(stablePoint.x)+","+Math.round(stablePoint.y)+")");
 
-        // Re-detect before every retry. Never replay a stale coordinate merely
-        // because Android reported the previous dispatch as COMPLETED.
-        for(int attempt=1;attempt<=5&&running.get();attempt++){
-            PointF tapPoint=stablePoint; Bitmap tapFrame=stableFrame;
-            if(attempt>1){
-                Bitmap fresh=shot();
-                PointF glyph=Detector.detectCarryingCloseGlyph(fresh);
-                PointF any=glyph!=null?glyph:Detector.detectCarryingClose(fresh);
-                if(any==null){
-                    emit("GREEN X RETRY ABORT • X not visible before retry #"+attempt+" • checking list ACK");
-                    if(waitForExpeditionList(cfg.fast?4:6,cfg.fast?110:160))return true;
-                    sleep(cfg.fast?120:180);
-                    continue;
-                }
-                tapPoint=glyph!=null?glyph:Detector.refineCarryingCloseTapPoint(fresh,any);
-                tapFrame=fresh;
+        for(int attempt=1;attempt<=4&&running.get();attempt++){
+            // Reacquire near the same anchor immediately before each retry.
+            Bitmap fresh=shot();
+            PointF current=Detector.detectCarryingClose(fresh);
+            if(current!=null&&Math.hypot(current.x-anchor.x,current.y-anchor.y)<=tolerance){
+                anchor=new PointF((anchor.x+current.x)*0.5f,(anchor.y+current.y)*0.5f);
+                anchorFrame=fresh;
             }
 
-            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(tapFrame,tapPoint.x,tapPoint.y,cfg.fast?105:125)
-                    .get(4,TimeUnit.SECONDS);
-            emit("GREEN X TAP #"+attempt+" • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
-                    tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
+            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(
+                    anchorFrame,anchor.x,anchor.y,cfg.fast?105:125).get(4,TimeUnit.SECONDS);
+            emit("GREEN X TAP #"+attempt+" • anchored screenshot=("+
+                    Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
+                    tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+
+                    Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
                     tr.displayWidth+"×"+tr.displayHeight+" • dispatch="+
                     (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
-            if(!tr.accepted||!tr.completed){ sleep(cfg.fast?160:240); continue; }
 
-            sleep(cfg.fast?220:320);
-            if(waitForExpeditionList(cfg.fast?4:6,cfg.fast?110:160)) return true;
-
-            Bitmap verify=shot();
-            PointF still=Detector.detectCarryingCloseGlyph(verify);
-            if(still==null) still=Detector.detectCarryingClose(verify);
-            if(still!=null){
-                stablePoint=Detector.detectCarryingCloseGlyph(verify)!=null?still:Detector.refineCarryingCloseTapPoint(verify,still);
-                stableFrame=verify;
-                emit("GREEN X STILL VISIBLE ⚠️ • retry will use fresh centre=("+Math.round(stablePoint.x)+","+Math.round(stablePoint.y)+")");
-            }else{
-                emit("GREEN X absent but list ACK not ready • do not tap stale coordinate");
-                if(waitForExpeditionList(cfg.fast?4:7,cfg.fast?120:170)) return true;
+            if(!tr.accepted||!tr.completed){
+                sleep(cfg.fast?120:180);
+                continue;
             }
+
+            // ACK on disappearance of THIS bottom-left control, not on an OCR
+            // scan of the next page. Two consecutive absent frames are enough;
+            // the next round's normal list scan will validate the returned page.
+            int absent=0;
+            boolean stillSeen=false;
+            for(int v=0;v<6&&running.get();v++){
+                sleep(cfg.fast?120:180);
+                Bitmap verify=shot();
+                PointF p=Detector.detectCarryingClose(verify);
+                if(p==null){
+                    absent++;
+                    emit("GREEN-X ACK • anchored X absent • streak="+absent+"/2");
+                    if(absent>=2){
+                        sleep(cfg.fast?260:420);
+                        emit("GREEN-X ACK ✅ • anchored X disappeared on 2 consecutive frames");
+                        return true;
+                    }
+                }else if(Math.hypot(p.x-anchor.x,p.y-anchor.y)<=tolerance){
+                    absent=0; stillSeen=true;
+                    anchor=p; anchorFrame=verify;
+                    emit("GREEN-X ACK • same X still visible @("+
+                            Math.round(p.x)+","+Math.round(p.y)+")");
+                }else{
+                    // A different candidate is irrelevant; do not jump the target.
+                    absent++;
+                    emit("GREEN-X ACK • unrelated X-like candidate ignored • absent="+absent+"/2");
+                    if(absent>=2){
+                        sleep(cfg.fast?260:420);
+                        emit("GREEN-X ACK ✅ • original anchored X disappeared");
+                        return true;
+                    }
+                }
+            }
+
+            if(stillSeen) emit("GREEN X STILL VISIBLE ⚠️ • retrying same anchored control");
         }
         return false;
     }
 
-    private boolean waitForExpeditionList(int attempts,long delay)throws Exception{
-        int streak=0;
-        for(int i=0;i<attempts&&running.get();i++){
-            Bitmap b=shot();
-            // Only the structurally-proven white X is allowed to veto list ACK.
-            // A weak green fallback can be a flower/grass false positive.
-            PointF structuralX=Detector.detectCarryingCloseGlyph(b);
-            CargoDetector.Result r=CargoDetector.scan(b); // one OCR pass only
-            boolean list=CargoDetector.hasExpeditionTab(r.ocr)||!r.fruits.isEmpty()||!r.seedlings.isEmpty()||!r.cards.isEmpty();
-            if(structuralX==null&&list){
-                streak++;
-                emit("GREEN-X ACK frame • list=true • streak="+streak+"/2");
-                if(streak>=2){emit("GREEN-X ACK ✅ • expedition list verified on 2 frames");return true;}
-            }else{
-                if(structuralX!=null)emit("GREEN-X ACK frame • structural X still present");
-                else emit("GREEN-X ACK frame • list evidence absent");
-                streak=0;
-            }
-            sleep(delay);
-        }
-        return false;
+    private static String dispatchKey(CargoDetector.Candidate c){
+        if(c==null||c.label==null)return "";
+        String k=c.label.replaceAll("\\s+","")
+                .replace('籃','藍').replace('蓝','藍').replace('苖','苗');
+        return k;
     }
 
     private void rememberDispatch(CargoAndBitmap choice,int round){
         if(choice==null||choice.item==null||choice.b==null)return;
+        String key=dispatchKey(choice.item);
+        if(key.isEmpty())return;
         float nx=choice.item.center.x/Math.max(1f,choice.b.getWidth());
         float ny=choice.item.center.y/Math.max(1f,choice.b.getHeight());
-        recentDispatches.addLast(new RecentDispatch(choice.item.kind,choice.item.label,nx,ny,round));
-        while(recentDispatches.size()>4)recentDispatches.removeFirst();
-        emit("RECENT-DISPATCH LATCH ✅ • kind="+choice.item.kind+" • label="+choice.item.label+
-                " • norm=("+String.format(java.util.Locale.US,"%.3f",nx)+","+String.format(java.util.Locale.US,"%.3f",ny)+")");
+        recentDispatches.addLast(new RecentDispatch(choice.item.kind,key,nx,ny,round));
+        while(recentDispatches.size()>6)recentDispatches.removeFirst();
+        emit("RECENT-DISPATCH EXACT ✅ • key="+key+
+                " • norm=("+String.format(java.util.Locale.US,"%.3f",nx)+","+
+                String.format(java.util.Locale.US,"%.3f",ny)+")");
     }
 
-    private boolean isRecentDispatch(CargoDetector.Candidate c,Bitmap b,int round){
+    private boolean isExactRecentDispatch(CargoDetector.Candidate c,Bitmap b,int round){
         if(c==null||b==null)return false;
-        String label=c.label==null?"":c.label.replaceAll("\\s+","");
-        if(label.isEmpty())return false;
+        String key=dispatchKey(c);
+        if(key.isEmpty())return false;
         float nx=c.center.x/Math.max(1f,b.getWidth()),ny=c.center.y/Math.max(1f,b.getHeight());
         for(RecentDispatch r:recentDispatches){
-            if(round-r.round>3||r.kind!=c.kind||!r.label.equals(label))continue;
-            if(Math.abs(nx-r.nx)<=0.085f&&Math.abs(ny-r.ny)<=0.075f)return true;
+            if(round-r.round>3||r.kind!=c.kind||!r.key.equals(key))continue;
+            if(Math.abs(nx-r.nx)<=0.030f&&Math.abs(ny-r.ny)<=0.040f)return true;
         }
         return false;
     }
@@ -608,7 +640,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.1-alpha13 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.2-alpha14 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

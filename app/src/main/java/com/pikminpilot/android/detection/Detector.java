@@ -273,7 +273,7 @@ public final class Detector {
         int w=b.getWidth(), h=b.getHeight();
         double minDim=Math.max(1,Math.min(w,h));
         int x0=(int)(w*0.12), x1=(int)(w*0.99);
-        int y0=(int)(h*0.18), y1=(int)(h*0.78);
+        int y0=(int)(h*0.25), y1=(int)(h*0.56);
         boolean[] mask=new boolean[w*h];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
@@ -322,7 +322,7 @@ public final class Detector {
                     if(gap>=w*0.025f&&gap<=w*0.185f) chain.add(unique.get(j));
                     else if(gap>w*0.185f) break;
                 }
-                if(chain.size()<4) continue;
+                if(chain.size()<5) continue;
                 float span=chain.get(chain.size()-1).x-chain.get(0).x;
                 if(span<w*0.25f) continue;
                 float meanY=0; for(PointF p:chain) meanY+=p.y; meanY/=chain.size();
@@ -331,7 +331,7 @@ public final class Detector {
                 if(score>bestScore){bestScore=score;bestChain=chain;}
             }
         }
-        if(bestChain==null||bestChain.size()<4) return null;
+        if(bestChain==null||bestChain.size()<5) return null;
 
         float rowY=0; for(PointF p:bestChain) rowY+=p.y; rowY/=bestChain.size();
         List<Float> gaps=new ArrayList<>();
@@ -416,6 +416,84 @@ public final class Detector {
         return new PointF(tx,rowY);
     }
 
+
+    /**
+     * Android-safe variant of the iOS magenta-pair detector.
+     *
+     * The iOS detector can search a broad vertical band because XCTest screenshots
+     * are very consistent. Android selection sheets move more between devices and
+     * accounts, and Pikmin/decor art below the filter strip can itself contain two
+     * magenta components. Restrict the iOS purple/pink pair search to a row that was
+     * independently located from the chip strip or the 飾品/自動 OCR anchor.
+     */
+    public static PointF detectPikminFilterNearRow(
+            Bitmap b, PilotConfig.PikminType type, float rowY, float tolerance) {
+        int w=b.getWidth(), h=b.getHeight();
+        RectF vp=activeContentRect(b);
+        double minDim=Math.max(1.0,Math.min(vp.width(),vp.height()));
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.12));
+        int x1=Math.min(w,(int)(vp.right-vp.width()*0.03));
+        int y0=Math.max(0,(int)Math.floor(rowY-Math.max(10f,tolerance)));
+        int y1=Math.min(h,(int)Math.ceil(rowY+Math.max(10f,tolerance)));
+        // The colour-filter strip lives in the upper/middle selection sheet.
+        int hardTop=Math.max(0,(int)(vp.top+vp.height()*0.20));
+        int hardBottom=Math.min(h,(int)(vp.top+vp.height()*0.58));
+        y0=Math.max(y0,hardTop);
+        y1=Math.min(y1,hardBottom);
+        if(y1<=y0) return null;
+
+        boolean[] mask=new boolean[w*h];
+        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++){
+            int color=b.getPixel(x,y);
+            Hsv v=hsv(color);
+            int r=(color>>16)&255, g=(color>>8)&255, bl=color&255;
+            boolean magenta=v.h>=278&&v.h<=332&&v.s>=0.16&&v.v>=0.58&&
+                    r>g+22&&bl>g+8;
+            if(magenta) mask[y*w+x]=true;
+        }
+
+        List<Component> candidates=new ArrayList<>();
+        for(Component c:components(mask,w,h)){
+            double wf=c.rect.width()/minDim, hf=c.rect.height()/minDim;
+            double aspect=c.rect.width()/Math.max(1.0,c.rect.height());
+            double fill=c.count/Math.max(1.0,c.rect.width()*c.rect.height());
+            if(c.count<minDim*minDim*0.00012) continue;
+            if(wf<0.020||wf>0.100||hf<0.012||hf>0.078) continue;
+            if(aspect<0.55||aspect>1.80||fill<0.18) continue;
+            if(Math.abs(c.center().y-rowY)>Math.max(12f,tolerance)) continue;
+            candidates.add(c);
+        }
+
+        PointF left=null,right=null;
+        double best=Double.POSITIVE_INFINITY;
+        for(int i=0;i<candidates.size();i++) for(int j=i+1;j<candidates.size();j++){
+            PointF a=candidates.get(i).center(), bb=candidates.get(j).center();
+            if(a.x>bb.x){PointF t=a;a=bb;bb=t;}
+            double dx=bb.x-a.x, dy=Math.abs(bb.y-a.y);
+            if(dx<vp.width()*0.10||dx>vp.width()*0.25) continue;
+            if(dy>Math.max(minDim*0.030,10)) continue;
+            double spacingScore=Math.abs(dx/Math.max(1.0,vp.width())-0.166);
+            double verticalScore=dy/Math.max(1.0,vp.height());
+            double rowScore=Math.abs(((a.y+bb.y)*0.5-rowY))/Math.max(1.0,vp.height());
+            double score=spacingScore+verticalScore*3.0+rowScore*5.0;
+            if(score<best){best=score;left=a;right=bb;}
+        }
+        if(left==null||right==null) return null;
+
+        float spacing=(right.x-left.x)*0.5f;
+        float targetY=(left.y+right.y)*0.5f;
+        float tx;
+        switch(type){
+            case PURPLE: tx=left.x; break;
+            case WHITE: tx=left.x+spacing; break;
+            case PINK: tx=right.x; break;
+            case ROCK: tx=right.x+spacing; break;
+            default: return null;
+        }
+        if(tx<vp.left+vp.width()*0.08f||tx>=vp.right-Math.max(2,minDim*0.01)) return null;
+        return new PointF(tx,targetY);
+    }
+
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         int x0=Math.max(0,(int)(vp.left+vp.width()*0.42)),x1=Math.min(w,(int)vp.right);
@@ -445,10 +523,10 @@ public final class Detector {
     public static PointF detectCarryingCloseGlyph(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         if(vp.width()<=1||vp.height()<=1)return null;
-        int x0=Math.max(0,(int)Math.floor(vp.left));
-        int x1=Math.min(w,(int)Math.ceil(vp.left+vp.width()*0.30f));
-        int y0=Math.max(0,(int)Math.floor(vp.top+vp.height()*0.74f));
-        int y1=Math.min(h,(int)Math.ceil(vp.bottom));
+        int x0=Math.max(0,(int)Math.floor(vp.left+vp.width()*0.02f));
+        int x1=Math.min(w,(int)Math.ceil(vp.left+vp.width()*0.24f));
+        int y0=Math.max(0,(int)Math.floor(vp.top+vp.height()*0.82f));
+        int y1=Math.min(h,(int)Math.ceil(vp.top+vp.height()*0.985f));
         if(x1<=x0||y1<=y0)return null;
 
         int rw=x1-x0,rh=y1-y0; boolean[] white=new boolean[rw*rh];
@@ -465,7 +543,7 @@ public final class Detector {
             PointF center=new PointF(rect.centerX(),rect.centerY());
             double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
             double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
-            if(nx<0||nx>0.30||ny<0.74||ny>1.0)continue;
+            if(nx<0.025||nx>0.24||ny<0.82||ny>0.985)continue;
             double wf=rect.width()/Math.max(1.0,vp.width()),hf=rect.height()/Math.max(1.0,vp.height());
             if(wf<0.008||wf>0.055||hf<0.006||hf>0.055)continue;
             double aspect=rect.width()/Math.max(1.0,rect.height());
@@ -504,7 +582,7 @@ public final class Detector {
                 total++;
             }
             if(total<=0)continue; double gf=(double)green/total; if(gf<0.72)continue;
-            double score=gf*2.0+Math.min(da,db)+fill*0.20-nx*0.08-Math.abs(ny-0.91)*0.05;
+            double score=gf*2.0+Math.min(da,db)+fill*0.20-nx*0.08-Math.abs(ny-0.93)*0.08;
             if(score>bestScore){bestScore=score;bestPoint=center;}
         }
         return bestPoint;
@@ -512,8 +590,8 @@ public final class Detector {
 
     private static PointF detectCarryingCloseLegacy(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
-        int x0=Math.max(0,(int)vp.left),x1=Math.min(w,(int)(vp.left+vp.width()*0.42));
-        int y0=Math.max(0,(int)(vp.top+vp.height()*0.60)),y1=Math.min(h,(int)vp.bottom);
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.02)),x1=Math.min(w,(int)(vp.left+vp.width()*0.24));
+        int y0=Math.max(0,(int)(vp.top+vp.height()*0.82)),y1=Math.min(h,(int)(vp.top+vp.height()*0.985));
         boolean[] mask=new boolean[w*h];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
@@ -526,14 +604,14 @@ public final class Detector {
             if(wf<0.045||wf>0.18||hf<0.020||hf>0.12)continue;
             double aspect=c.rect.width()/Math.max(1,c.rect.height()); if(aspect<0.68||aspect>1.45)continue;
             PointF center=c.center(); double nx=(center.x-vp.left)/Math.max(1,vp.width()),ny=(center.y-vp.top)/Math.max(1,vp.height());
-            if(nx>0.40||ny<0.62)continue;
+            if(nx<0.025||nx>0.24||ny<0.82||ny>0.985)continue;
             int white=0,sampled=0;
             for(int yy=Math.max(0,(int)c.rect.top);yy<=Math.min(h-1,(int)c.rect.bottom);yy+=2)
                 for(int xx=Math.max(0,(int)c.rect.left);xx<=Math.min(w-1,(int)c.rect.right);xx+=2){
                     Hsv v=hsv(b.getPixel(xx,yy)); if(v.s<=0.20&&v.v>=0.82)white++; sampled++;
                 }
             double wfraction=sampled>0?(double)white/sampled:0; if(wfraction<0.006)continue;
-            double score=Math.abs(Math.log(Math.max(0.001,aspect)))+nx*0.055+Math.abs(ny-0.90)*0.018-
+            double score=Math.abs(Math.log(Math.max(0.001,aspect)))+nx*0.055+Math.abs(ny-0.93)*0.030-
                     Math.min(0.20,c.count/area*14.0)-Math.min(0.10,wfraction*2.5);
             if(score<best){best=score;bestPoint=center;}
         }
