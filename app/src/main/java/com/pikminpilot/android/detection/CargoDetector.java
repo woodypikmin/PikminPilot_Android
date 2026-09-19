@@ -390,11 +390,18 @@ public final class CargoDetector {
     /** OCR fallback for locating the horizontal Pikmin colour-filter strip. */
     public static PointF filterRowHintPoint(List<OcrItem> items) {
         OcrItem automatic=null;
+        float bottom=Math.max(1f,maxBottom(items));
         for(OcrItem i:items) {
             String t=normalize(i.text).toLowerCase();
-            if(t.contains("飾品")||t.contains("饰品")||t.contains("decor"))
-                return new PointF(i.rect.centerX(),i.rect.centerY());
-            if(t.equals("自動")||t.equals("自动")||t.contains("auto")) automatic=i;
+            float ny=i.rect.centerY()/bottom;
+            // The real filter controls are in the middle selection strip.  Do not
+            // confuse the bottom-right "飾品一覽" button with the short "飾品" chip
+            // control; that mistake previously produced absurd row hints near 95% H.
+            if(ny<0.24f||ny>0.64f) continue;
+            boolean decor=t.equals("飾品")||t.equals("饰品")||t.equals("decor")||
+                    t.equals("飾品▼")||t.equals("饰品▼");
+            if(decor) return new PointF(i.rect.centerX(),i.rect.centerY());
+            if(t.equals("自動")||t.equals("自动")||t.equals("auto")) automatic=i;
         }
         return automatic==null?null:new PointF(automatic.rect.centerX(),automatic.rect.centerY());
     }

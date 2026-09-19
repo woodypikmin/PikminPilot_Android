@@ -1,4 +1,4 @@
-# PikminPilot Android 0.3.2-alpha14
+# PikminPilot Android 0.3.3-alpha15
 
 ## alpha14 stability fixes
 
@@ -52,4 +52,14 @@ The 30% overlapping list swipe is retained. If the current viewport has no AVAIL
 
 Build marker:
 
-`BUILD 0.3.2-alpha14`
+`BUILD 0.3.3-alpha15`
+
+## 0.3.3-alpha15 filter-row safety change
+
+The Pikmin colour filter no longer uses a broad magenta search, OCR Y fallback, or blind last-resort swipe.
+It locks the canonical chip lattice from at least three circular colour anchors (red/yellow/blue/cyan), infers
+purple/white/pink/rock by slot geometry, and only swipes on a proven row when the requested slot is genuinely
+off-screen. If the row is not proven, automation stops at `E_FILTER` instead of dragging the Pikmin grid.
+
+When the row is initially bright, the controller also verifies that the row dims after the filter tap. A failed
+filter tap is retried once on the same canonical slot before selection is allowed to continue.

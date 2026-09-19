@@ -58,7 +58,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.2-alpha14 • anchored filter row • anchored Green-X • iOS card-only blocking • exact recent-dispatch latch");
+            emit("BUILD 0.3.3-alpha15 • canonical chip lattice • no blind filter swipe • filter tap ACK • anchored Green-X");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -97,9 +97,8 @@ public final class PilotController {
                 emit("PIKMIN FILTER TARGET ✅ • type="+PilotConfig.pikminName(cfg.type)+
                         " • px=("+Math.round(filter.p.x)+","+Math.round(filter.p.y)+")"+
                         " • norm=("+String.format(java.util.Locale.US,"%.3f",filter.p.x/Math.max(1f,filter.b.getWidth()))+","+
-                        String.format(java.util.Locale.US,"%.3f",filter.p.y/Math.max(1f,filter.b.getHeight()))+") • detector=iOS-magenta-pair");
-                tapMapped(filter.b,filter.p.x,filter.p.y,55,"PIKMIN FILTER");
-                sleep(cfg.fast?220:320);
+                        String.format(java.util.Locale.US,"%.3f",filter.p.y/Math.max(1f,filter.b.getHeight()))+") • detector=canonical-chip-lattice");
+                applyPikminFilterWithAck(filter,cfg,round);
 
                 stage("SELECT","第 "+round+" 輪：選擇 "+cfg.pikminCount+" 隻皮克敏");
                 selectPikminFastGeometric(cfg,round);
@@ -306,61 +305,161 @@ public final class PilotController {
         }catch(Throwable ignored){}
         try{
             Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
-            if(row!=null&&row.chipCount>=5) return "filter-row-geometry";
+            if(row!=null&&row.chipCount>=3) return "filter-row-geometry";
         }catch(Throwable ignored){}
         return null;
     }
 
     /**
-     * Fresh-frame filter selection.  First inspect the row exactly as it opened;
-     * only reveal/scroll it if the requested chip is not already visible.
+     * Filter selection locked to the actual red/yellow/blue/cyan chip lattice.
+     *
+     * No OCR fallback Y and no blind swipe are permitted.  If the row cannot be
+     * proven, stop instead of dragging random parts of the selection grid.
      */
     private PointAndBitmap findPikminFilterAdaptive(PilotConfig cfg,int round)throws Exception{
         Bitmap frame=shot();
+        int swipes=0;
 
-        for(int attempt=0;attempt<6&&running.get();attempt++){
-            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(frame);
-            PointF hint=null;
-            String rowSource="none";
-
-            if(row!=null&&row.chipCount>=5){
-                hint=new PointF(frame.getWidth()*0.50f,row.y);
-                rowSource="chip-row";
-            }else{
-                try{
-                    PointF ocrHint=CargoDetector.filterRowHintPoint(CargoDetector.recognize(frame));
-                    if(ocrHint!=null){
-                        hint=ocrHint;
-                        rowSource="ocr-decor/auto";
-                    }
-                }catch(Throwable ignored){}
-            }
-
-            if(hint!=null){
-                float tolerance=Math.max(frame.getHeight()*0.028f,
-                        row!=null?Math.max(24f,row.spacing*0.70f):frame.getHeight()*0.036f);
-                PointF p=Detector.detectPikminFilterNearRow(frame,cfg.type,hint.y,tolerance);
-                if(p!=null){
-                    emit("FILTER ROW LOCK ✅ • source="+rowSource+
-                            " • rowY="+Math.round(hint.y)+
-                            " • targetY="+Math.round(p.y)+
-                            " • dy="+Math.round(Math.abs(p.y-hint.y)));
-                    emit((attempt==0?"PIKMIN FILTER DIRECT ✅":"PIKMIN FILTER AFTER SWIPE ✅")+
-                            " • round="+round+" • attempt="+(attempt+1)+"/6");
-                    return new PointAndBitmap(p,frame);
+        for(int attempt=0;attempt<5&&running.get();attempt++){
+            Detector.FilterLattice lattice=Detector.detectFilterLattice(frame);
+            if(lattice==null){
+                emit("FILTER LATTICE MISS ⚠️ • attempt="+(attempt+1)+"/5 • NO SWIPE • row not proven");
+                // One settle retry is useful immediately after the CTA transition.
+                if(attempt==0){
+                    sleep(cfg.fast?180:280);
+                    frame=shot();
+                    continue;
                 }
-                emit("FILTER ROW LOCK • source="+rowSource+" • row found but requested chip pair not found");
-            }else{
-                emit("FILTER ROW LOCK MISS ⚠️ • no reliable chip-row anchor; refusing broad magenta guess");
+                return null;
             }
 
-            if(attempt>=5)break;
-            status("第 "+round+" 輪：展開皮克敏顏色列");
-            swipeFilterRowLeft(frame,attempt==0?330:300);
-            sleep(cfg.fast?230:340);
-            frame=shot();
+            float tx=lattice.targetX(cfg.type);
+            boolean visible=tx>=frame.getWidth()*0.055f&&tx<=frame.getWidth()*0.945f;
+            boolean plausible=visible&&Detector.filterTargetLooksPlausible(frame,lattice,cfg.type);
+
+            emit("FILTER LATTICE ✅ • evidence="+lattice.evidenceCount+
+                    " • rowY="+Math.round(lattice.rowY)+
+                    " ("+String.format(java.util.Locale.US,"%.3f",lattice.rowY/Math.max(1f,frame.getHeight()))+"H)"+
+                    " • spacing="+Math.round(lattice.spacing)+
+                    " • originX="+Math.round(lattice.originX)+
+                    " • residual="+String.format(java.util.Locale.US,"%.1f",lattice.residual)+
+                    " • targetX="+Math.round(tx)+
+                    " • visible="+visible+
+                    " • plausible="+plausible);
+
+            if(visible&&plausible){
+                emit((swipes==0?"PIKMIN FILTER DIRECT ✅":"PIKMIN FILTER AFTER SWIPE ✅")+
+                        " • round="+round+" • swipes="+swipes);
+                return new PointAndBitmap(new PointF(tx,lattice.rowY),frame);
+            }
+
+            if(!visible){
+                if(swipes>=2){
+                    emit("FILTER TARGET OFFSCREEN ⚠️ • swipe limit reached");
+                    return null;
+                }
+                status("第 "+round+" 輪：移動皮克敏顏色列");
+                swipeFilterRowTowardTarget(frame,lattice,tx,cfg.fast?240:320);
+                swipes++;
+                sleep(cfg.fast?220:320);
+                frame=shot();
+                continue;
+            }
+
+            // The lattice is proven and the slot is on-screen, but the expected
+            // colour/brightness is not present.  Do NOT swipe somewhere else:
+            // that is exactly how alpha14 wandered into the Pikmin grid.
+            emit("FILTER TARGET REJECTED ⚠️ • proven row, on-screen slot does not look like "+
+                    PilotConfig.pikminName(cfg.type)+" • NO SWIPE");
+            if(attempt<2){
+                sleep(cfg.fast?160:240);
+                frame=shot();
+                continue;
+            }
+            return null;
         }
         return null;
+    }
+
+    private void swipeFilterRowTowardTarget(Bitmap frame,Detector.FilterLattice lattice,float targetX,long ms)throws Exception{
+        float w=frame.getWidth(),y=lattice.rowY;
+        float fromX,toX;
+        if(targetX>w*0.945f){
+            fromX=w*0.80f;
+            float slots=Math.max(2.4f,Math.min(4.6f,(targetX-w*0.78f)/Math.max(1f,lattice.spacing)+1.2f));
+            toX=Math.max(w*0.34f,fromX-slots*lattice.spacing);
+            emit("FILTER ROW SWIPE LEFT ✅ • provenRowY="+Math.round(y)+
+                    " • targetOffscreenX="+Math.round(targetX)+
+                    " • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+        }else if(targetX<w*0.055f){
+            fromX=w*0.32f;
+            float slots=Math.max(2.4f,Math.min(4.6f,(w*0.22f-targetX)/Math.max(1f,lattice.spacing)+1.2f));
+            toX=Math.min(w*0.78f,fromX+slots*lattice.spacing);
+            emit("FILTER ROW SWIPE RIGHT ✅ • provenRowY="+Math.round(y)+
+                    " • targetOffscreenX="+Math.round(targetX)+
+                    " • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
+        }else{
+            return;
+        }
+        swipeMapped(frame,fromX,y,toX,y,ms,"FILTER ROW");
+    }
+
+    /**
+     * A dispatched Accessibility tap is not enough.  On the normal unfiltered
+     * row Pikmin Bloom dims the non-target colour chips after consuming a filter
+     * tap.  Use that visual change as a lightweight ACK; retry the same proven
+     * slot once before allowing Pikmin selection to start.
+     */
+    private void applyPikminFilterWithAck(PointAndBitmap filter,PilotConfig cfg,int round)throws Exception{
+        PointAndBitmap current=filter;
+        Detector.FilterLattice beforeLattice=Detector.detectFilterLattice(current.b);
+        float beforeScore=Detector.filterRowSaturationScore(current.b,beforeLattice);
+
+        for(int tapTry=1;tapTry<=2&&running.get();tapTry++){
+            tapMapped(current.b,current.p.x,current.p.y,55,"PIKMIN FILTER");
+            sleep(cfg.fast?220:320);
+
+            Bitmap after=shot();
+            Detector.FilterLattice afterLattice=Detector.detectFilterLattice(after);
+            float afterScore=Detector.filterRowSaturationScore(after,afterLattice);
+
+            if(beforeScore>=0.52f&&afterScore>=0f){
+                emit("PIKMIN FILTER ACK • try="+tapTry+
+                        " • saturation="+String.format(java.util.Locale.US,"%.3f",beforeScore)+
+                        " → "+String.format(java.util.Locale.US,"%.3f",afterScore));
+                if(afterScore<=beforeScore*0.82f){
+                    emit("PIKMIN FILTER ACK ✅ • row dimmed after tap");
+                    return;
+                }
+            }else{
+                // A row can already be dim when the game carried the previous
+                // filter state into the next selection page.  The slot location
+                // is still lattice-proven, so don't manufacture a false failure.
+                emit("PIKMIN FILTER ACK WEAK • pre/post saturation proof unavailable or already dim"+
+                        " • before="+String.format(java.util.Locale.US,"%.3f",beforeScore)+
+                        " • after="+String.format(java.util.Locale.US,"%.3f",afterScore));
+                return;
+            }
+
+            if(tapTry==1){
+                if(afterLattice==null){
+                    emit("PIKMIN FILTER RETRY ABORT ⚠️ • row disappeared after tap");
+                    throw new RuntimeException("皮克敏顏色圓圈點擊後狀態無法確認");
+                }
+                float tx=afterLattice.targetX(cfg.type);
+                if(tx<after.getWidth()*0.055f||tx>after.getWidth()*0.945f||
+                        !Detector.filterTargetLooksPlausible(after,afterLattice,cfg.type)){
+                    emit("PIKMIN FILTER RETRY ABORT ⚠️ • target slot no longer proven");
+                    throw new RuntimeException("皮克敏顏色圓圈點擊後目標位置無法確認");
+                }
+                emit("PIKMIN FILTER RETRY #2 • same canonical slot • x="+Math.round(tx)+
+                        " • y="+Math.round(afterLattice.rowY));
+                current=new PointAndBitmap(new PointF(tx,afterLattice.rowY),after);
+                beforeLattice=afterLattice;
+                beforeScore=afterScore;
+            }
+        }
+        throw new RuntimeException("皮克敏顏色圓圈點擊未生效");
     }
 
     /**
@@ -575,35 +674,6 @@ public final class PilotController {
     private void requireService(){if(service==null)service=PilotAccessibilityService.get();if(service==null)throw new IllegalStateException("Accessibility service is not enabled");}
     private Bitmap shot()throws Exception{requireService();Bitmap b=service.screenshot().get(4,TimeUnit.SECONDS);if(b==null)throw new RuntimeException("screenshot returned null");return b;}
     private void tap(float x,float y,long ms)throws Exception{if(!running.get())throw new InterruptedException("stopped");if(!service.tap(x,y,ms).get(3,TimeUnit.SECONDS))throw new RuntimeException("tap cancelled");}
-    private void swipeFilterRowLeft(Bitmap frame,long ms)throws Exception {
-        float w=frame.getWidth(), h=frame.getHeight();
-        Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(frame);
-        float y,fromX,toX;
-        if(row!=null){
-            y=row.y;fromX=row.fromX;toX=row.toX;
-            emit("FILTER ROW AUTO ✅ • frame="+Math.round(w)+"×"+Math.round(h)+
-                    " • chips="+row.chipCount+
-                    " • y="+Math.round(y)+" ("+String.format(java.util.Locale.US,"%.3f",y/Math.max(1f,h))+"H)"+
-                    " • spacing="+Math.round(row.spacing)+
-                    " • swipe=("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
-        }else{
-            PointF hint=null;
-            try{hint=CargoDetector.filterRowHintPoint(CargoDetector.recognize(frame));}catch(Throwable ignored){}
-            if(hint!=null){
-                y=hint.y;fromX=w*0.78f;toX=w*0.36f;
-                emit("FILTER ROW OCR FALLBACK ✅ • y="+Math.round(y)+
-                        " • swipe=("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
-            }else{
-                // Absolute last resort only. Normal builds should use either the
-                // image-detected coloured row or the 飾品/自動 OCR anchor above.
-                y=h*0.42f;fromX=w*0.78f;toX=w*0.36f;
-                emit("FILTER ROW AUTO MISS ⚠️ • last-resort swipe • frame="+Math.round(w)+"×"+Math.round(h)+
-                        " • ("+Math.round(fromX)+","+Math.round(y)+") → ("+Math.round(toX)+","+Math.round(y)+")");
-            }
-        }
-        swipeMapped(frame,fromX,y,toX,y,ms,"FILTER ROW");
-    }
-
     private void tapMapped(Bitmap frame,float x,float y,long ms,String label)throws Exception{
         if(!running.get())throw new InterruptedException("stopped");
         PilotAccessibilityService.TapResult tr=service.tapFromBitmap(frame,x,y,ms).get(4,TimeUnit.SECONDS);
@@ -640,7 +710,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.2-alpha14 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.3-alpha15 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

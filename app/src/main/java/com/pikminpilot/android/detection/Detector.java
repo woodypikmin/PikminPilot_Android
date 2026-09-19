@@ -47,6 +47,40 @@ public final class Detector {
         }
     }
 
+    /**
+     * Canonical colour-filter lattice:
+     * red=0, yellow=1, blue=2, purple=3, white=4, pink=5, rock=6, cyan=7.
+     *
+     * We lock the row from the small round red/yellow/blue/cyan chips themselves,
+     * not from Pikmin/decor artwork and not from OCR. Once origin + spacing are
+     * known, white/pink/rock positions are pure geometry.
+     */
+    public static final class FilterLattice {
+        public final float rowY, spacing, originX;
+        public final int evidenceCount;
+        public final float residual;
+        FilterLattice(float rowY,float spacing,float originX,int evidenceCount,float residual){
+            this.rowY=rowY;this.spacing=spacing;this.originX=originX;
+            this.evidenceCount=evidenceCount;this.residual=residual;
+        }
+        public float targetX(PilotConfig.PikminType type){
+            int i;
+            switch(type){
+                case PURPLE:i=3;break;
+                case WHITE:i=4;break;
+                case PINK:i=5;break;
+                case ROCK:i=6;break;
+                default:return Float.NaN;
+            }
+            return originX+i*spacing;
+        }
+    }
+
+    private static final class FilterAnchor {
+        final float x,y; final int index;
+        FilterAnchor(float x,float y,int index){this.x=x;this.y=y;this.index=index;}
+    }
+
     public static Hsv hsv(int color) {
         double r = ((color >> 16) & 0xff) / 255.0;
         double g = ((color >> 8) & 0xff) / 255.0;
@@ -268,87 +302,163 @@ public final class Detector {
         return bestPoint;
     }
 
-    /** Detect the actual colour-chip strip from the current selection screenshot. */
-    public static FilterRowGeometry detectFilterRowGeometry(Bitmap b) {
+    private static int canonicalFilterAnchor(Hsv v) {
+        // Use only colours that remain separable even after the game dims the row.
+        // Purple/pink are NOT required to lock the lattice.
+        if ((v.h<=18||v.h>=345) && v.s>=0.20 && v.v>=0.72) return 0; // red
+        if (v.h>=32&&v.h<=72 && v.s>=0.30 && v.v>=0.72) return 1;    // yellow
+        if (v.h>=190&&v.h<=225 && v.s>=0.20 && v.v>=0.62) return 2; // blue
+        if (v.h>=165&&v.h<=195 && v.s>=0.18 && v.v>=0.70) return 7; // cyan
+        return -1;
+    }
+
+    /**
+     * Lock the real filter row from circular colour chips.
+     *
+     * Safety property: >=3 canonical colours must agree on one equally-spaced
+     * lattice. Random pink Pikmin/decor art lower in the grid cannot satisfy it.
+     */
+    public static FilterLattice detectFilterLattice(Bitmap b) {
         int w=b.getWidth(), h=b.getHeight();
         double minDim=Math.max(1,Math.min(w,h));
-        int x0=(int)(w*0.12), x1=(int)(w*0.99);
-        int y0=(int)(h*0.25), y1=(int)(h*0.56);
+        int x0=(int)(w*0.10), x1=(int)(w*0.99);
+        int y0=(int)(h*0.26), y1=(int)(h*0.57);
+
         boolean[] mask=new boolean[w*h];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
-            // The filter strip always exposes several strongly coloured chips
-            // (red/yellow/blue/purple/pink/cyan).  White and rock need not enter
-            // this mask; their slots are inferred from the detected row spacing.
-            if(v.s>=0.30&&v.v>=0.48) mask[y*w+x]=true;
+            if(v.s>=0.155&&v.v>=0.48) mask[y*w+x]=true;
         }
 
-        List<Component> compact=new ArrayList<>();
+        List<FilterAnchor> anchors=new ArrayList<>();
         for(Component c:components(mask,w,h)) {
             double wf=c.rect.width()/minDim, hf=c.rect.height()/minDim;
             double aspect=c.rect.width()/Math.max(1.0,c.rect.height());
             double fill=c.count/Math.max(1.0,c.rect.width()*c.rect.height());
-            if(c.count<minDim*minDim*0.00007) continue;
-            if(wf<0.028||wf>0.095||hf<0.028||hf>0.095) continue;
-            if(aspect<0.50||aspect>1.85||fill<0.24) continue;
-            compact.add(c);
+            if(c.count<minDim*minDim*0.000075) continue;
+            if(wf<0.025||wf>0.078||hf<0.025||hf>0.078) continue;
+            if(aspect<0.74||aspect>1.34||fill<0.48) continue;
+            PointF p=c.center();
+            int px=Math.max(0,Math.min(w-1,Math.round(p.x)));
+            int py=Math.max(0,Math.min(h-1,Math.round(p.y)));
+            int idx=canonicalFilterAnchor(hsv(b.getPixel(px,py)));
+            if(idx>=0) anchors.add(new FilterAnchor(p.x,p.y,idx));
         }
-        if(compact.size()<3) return null;
+        if(anchors.size()<3) return null;
 
-        List<PointF> bestChain=null; double bestScore=-1e9;
-        float yTolerance=(float)Math.max(12,minDim*0.038);
-        for(Component seed:compact) {
-            List<PointF> row=new ArrayList<>();
-            float sy=seed.center().y;
-            for(Component c:compact) if(Math.abs(c.center().y-sy)<=yTolerance) row.add(c.center());
-            row.sort(Comparator.comparingDouble(p->p.x));
+        float yTol=(float)Math.max(10,minDim*0.030);
+        FilterLattice best=null;
+        double bestScore=-1e18;
 
-            // De-duplicate fragments belonging to the same gradient-filled chip.
-            List<PointF> unique=new ArrayList<>();
-            for(PointF p:row) {
-                if(unique.isEmpty()||p.x-unique.get(unique.size()-1).x>w*0.018f) unique.add(p);
-                else {
-                    PointF old=unique.get(unique.size()-1);
-                    unique.set(unique.size()-1,new PointF((old.x+p.x)*0.5f,(old.y+p.y)*0.5f));
+        for(int i=0;i<anchors.size();i++) for(int j=i+1;j<anchors.size();j++) {
+            FilterAnchor a=anchors.get(i), c=anchors.get(j);
+            if(a.index==c.index) continue;
+            if(Math.abs(a.y-c.y)>yTol) continue;
+            float spacing=(c.x-a.x)/(c.index-a.index);
+            if(spacing<0) spacing=-spacing;
+            if(spacing<w*0.045f||spacing>w*0.115f) continue;
+
+            float originA=a.x-a.index*spacing;
+            float originC=c.x-c.index*spacing;
+            float origin=(originA+originC)*0.5f;
+            float rowSeed=(a.y+c.y)*0.5f;
+
+            List<FilterAnchor> support=new ArrayList<>();
+            boolean[] seenIndex=new boolean[8];
+            for(FilterAnchor q:anchors) {
+                if(Math.abs(q.y-rowSeed)>yTol) continue;
+                float expected=origin+q.index*spacing;
+                float err=Math.abs(q.x-expected);
+                if(err<=Math.max(7f,spacing*0.26f)) {
+                    support.add(q);
+                    seenIndex[q.index]=true;
                 }
             }
+            int distinct=0; for(boolean s:seenIndex) if(s) distinct++;
+            if(distinct<3||support.size()<3) continue;
 
-            // Pick the best consecutive chain.  A two-slot gap is allowed because
-            // white/rock chips are intentionally absent from the saturation mask.
-            for(int start=0;start<unique.size();start++) {
-                List<PointF> chain=new ArrayList<>(); chain.add(unique.get(start));
-                for(int j=start+1;j<unique.size();j++) {
-                    float gap=unique.get(j).x-chain.get(chain.size()-1).x;
-                    if(gap>=w*0.025f&&gap<=w*0.185f) chain.add(unique.get(j));
-                    else if(gap>w*0.185f) break;
-                }
-                if(chain.size()<5) continue;
-                float span=chain.get(chain.size()-1).x-chain.get(0).x;
-                if(span<w*0.25f) continue;
-                float meanY=0; for(PointF p:chain) meanY+=p.y; meanY/=chain.size();
-                float spread=0; for(PointF p:chain) spread+=Math.abs(p.y-meanY); spread/=chain.size();
-                double score=chain.size()*12.0+(span/w)*8.0-(spread/Math.max(1.0,minDim))*35.0-(meanY/Math.max(1.0,h))*120.0;
-                if(score>bestScore){bestScore=score;bestChain=chain;}
+            float mi=0,mx=0,my=0;
+            for(FilterAnchor q:support){mi+=q.index;mx+=q.x;my+=q.y;}
+            mi/=support.size();mx/=support.size();my/=support.size();
+            float num=0,den=0;
+            for(FilterAnchor q:support){float di=q.index-mi;num+=di*(q.x-mx);den+=di*di;}
+            if(den>0.001f) spacing=num/den;
+            if(spacing<w*0.045f||spacing>w*0.115f) continue;
+            origin=mx-mi*spacing;
+
+            float residualSum=0;
+            for(FilterAnchor q:support) residualSum+=Math.abs(q.x-(origin+q.index*spacing));
+            float residual=residualSum/support.size();
+
+            double score=distinct*30.0+support.size()*8.0
+                    -(residual/Math.max(1f,spacing))*45.0
+                    -(my/Math.max(1f,h))*4.0;
+            if(score>bestScore) {
+                bestScore=score;
+                best=new FilterLattice(my,spacing,origin,distinct,residual);
             }
         }
-        if(bestChain==null||bestChain.size()<5) return null;
+        return best;
+    }
 
-        float rowY=0; for(PointF p:bestChain) rowY+=p.y; rowY/=bestChain.size();
-        List<Float> gaps=new ArrayList<>();
-        for(int i=1;i<bestChain.size();i++) {
-            float g=bestChain.get(i).x-bestChain.get(i-1).x;
-            if(g>=w*0.025f&&g<=w*0.115f) gaps.add(g);
+    /** Compatibility wrapper used by selection-page proof. */
+    public static FilterRowGeometry detectFilterRowGeometry(Bitmap b) {
+        FilterLattice l=detectFilterLattice(b);
+        if(l==null) return null;
+        float w=b.getWidth();
+        float fromX=w*0.80f;
+        float toX=Math.max(w*0.32f,fromX-Math.min(w*0.42f,l.spacing*5.0f));
+        return new FilterRowGeometry(l.rowY,fromX,toX,l.spacing,l.evidenceCount);
+    }
+
+    private static Hsv patchHsv(Bitmap b,float cx,float cy,float radius) {
+        int w=b.getWidth(),h=b.getHeight();
+        int r=Math.max(2,Math.round(radius));
+        long sr=0,sg=0,sb=0,n=0;
+        int x0=Math.max(0,Math.round(cx)-r),x1=Math.min(w-1,Math.round(cx)+r);
+        int y0=Math.max(0,Math.round(cy)-r),y1=Math.min(h-1,Math.round(cy)+r);
+        int step=Math.max(1,r/4);
+        for(int y=y0;y<=y1;y+=step) for(int x=x0;x<=x1;x+=step) {
+            int col=b.getPixel(x,y);
+            sr+=(col>>16)&255; sg+=(col>>8)&255; sb+=col&255; n++;
         }
-        float spacing;
-        if(!gaps.isEmpty()) {
-            Collections.sort(gaps); spacing=gaps.get(gaps.size()/2);
-        } else spacing=w*0.082f;
+        if(n==0) return new Hsv(0,0,0);
+        int color=(0xff<<24)|(((int)(sr/n)&255)<<16)|(((int)(sg/n)&255)<<8)|((int)(sb/n)&255);
+        return hsv(color);
+    }
 
-        // Avoid the extreme right edge where Android/game floating overlays often live.
-        float fromX=Math.min(w*0.80f, bestChain.get(bestChain.size()-1).x);
-        fromX=Math.max(w*0.62f,fromX);
-        float toX=Math.max(w*0.28f,fromX-w*0.42f);
-        return new FilterRowGeometry(rowY,fromX,toX,spacing,bestChain.size());
+    public static boolean filterTargetLooksPlausible(Bitmap b,FilterLattice l,PilotConfig.PikminType type) {
+        if(l==null) return false;
+        float x=l.targetX(type), w=b.getWidth();
+        if(Float.isNaN(x)||x<w*0.055f||x>w*0.945f) return false;
+        Hsv v=patchHsv(b,x,l.rowY,Math.max(4f,Math.min(b.getWidth(),b.getHeight())*0.010f));
+        switch(type) {
+            case PURPLE:
+                return v.h>=270&&v.h<=338&&v.s>=0.13&&v.v>=0.58;
+            case PINK:
+                return v.h>=270&&v.h<=345&&v.s>=0.07&&v.v>=0.72;
+            case WHITE:
+                return v.s<=0.32&&v.v>=0.68;
+            case ROCK:
+                return v.s<=0.32&&v.v>=0.22&&v.v<=0.86;
+            default:
+                return false;
+        }
+    }
+
+    public static float filterRowSaturationScore(Bitmap b,FilterLattice l) {
+        if(l==null) return -1f;
+        int[] idx={0,1,2,3,7};
+        float sum=0; int n=0; float w=b.getWidth();
+        float radius=Math.max(4f,Math.min(b.getWidth(),b.getHeight())*0.010f);
+        for(int i:idx) {
+            float x=l.originX+i*l.spacing;
+            if(x<w*0.055f||x>w*0.945f) continue;
+            Hsv v=patchHsv(b,x,l.rowY,radius);
+            if(v.v<0.35) continue;
+            sum+=(float)v.s; n++;
+        }
+        return n>=3?sum/n:-1f;
     }
 
     /**
