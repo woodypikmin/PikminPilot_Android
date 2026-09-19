@@ -58,7 +58,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.4-alpha16 • 24% expedition-list swipe • 3000ms list settle • canonical chip lattice • anchored Green-X");
+            emit("BUILD 0.3.5-alpha17 • 24% list swipe • 3000ms settle • dynamic NAV-GUARD • canonical chip lattice • anchored Green-X");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -132,13 +132,26 @@ public final class PilotController {
     }
 
     private CargoAndBitmap findCargo(PilotConfig cfg,int round)throws Exception{
-        boolean down=true,reversed=false;int swipes=0;
+        boolean down=true,reversed=false;int swipes=0,guardMisses=0;
         while(running.get()){
             status("第 "+round+" 輪：掃描探險列表 • "+(down?"往下":"往上")+" "+(swipes+1)+"/13");
             emit("ROUND "+round+" • capture → OCR/list detector • direction="+(down?"DOWN":"UP")+" • swipe="+swipes);
             Bitmap b=shot();
             CargoDetector.Result result=CargoDetector.scan(b);
+            emit("NAV-GUARD • proven="+result.navGuardProven+" • source="+result.navGuardSource+
+                    " • contentTopY="+Math.round(result.contentTopY)+"/"+b.getHeight());
+            if(!result.navGuardProven){
+                guardMisses++;
+                emit("SCAN-DIAG SKIP[NAV_GUARD_UNPROVEN] • refusing cargo tap/swipe • retry="+guardMisses+"/5");
+                if(guardMisses>=5) throw new RuntimeException("探險導覽列未穩定辨識；為避免誤點上方『花苗』分頁已停止");
+                sleep(3000);
+                continue;
+            }
+            guardMisses=0;
             List<CargoDetector.Candidate> available=result.matching(cfg.cargoMode);
+            int beforeNav=available.size();
+            available.removeIf(c->c.center.y<result.contentTopY);
+            if(beforeNav!=available.size()) emit("SCAN-DIAG SKIP[NAV_GUARD] count="+(beforeNav-available.size()));
             int beforeRecent=available.size();
             available.removeIf(c->isExactRecentDispatch(c,b,round));
             if(beforeRecent!=available.size())
@@ -714,7 +727,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.4-alpha16 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.5-alpha17 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

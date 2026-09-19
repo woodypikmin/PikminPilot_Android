@@ -67,10 +67,15 @@ public final class CargoDetector {
         public final List<StatusCard> cards;
         public final List<OcrItem> ocr;
         public final List<String> diagnostics;
+        public final boolean navGuardProven;
+        public final float contentTopY;
+        public final String navGuardSource;
         public Result(List<Candidate> fruits, List<Candidate> seedlings, List<Candidate> blocked,
-                      List<StatusCard> cards, List<OcrItem> ocr, List<String> diagnostics) {
+                      List<StatusCard> cards, List<OcrItem> ocr, List<String> diagnostics,
+                      boolean navGuardProven, float contentTopY, String navGuardSource) {
             this.fruits=fruits; this.seedlings=seedlings; this.blocked=blocked; this.cards=cards; this.ocr=ocr;
-            this.diagnostics=diagnostics;
+            this.diagnostics=diagnostics; this.navGuardProven=navGuardProven; this.contentTopY=contentTopY;
+            this.navGuardSource=navGuardSource;
         }
         public List<Candidate> matching(PilotConfig.CargoMode mode) {
             List<Candidate> out=new ArrayList<>();
@@ -112,6 +117,7 @@ public final class CargoDetector {
     public static Result scan(Bitmap b) throws Exception {
         int w=b.getWidth(), h=b.getHeight();
         List<OcrItem> ocr=recognize(b);
+        NavGuard navGuard=detectExpeditionNavGuard(ocr,w,h);
         List<Band> rawStatusBands=horizontalBands(b);
         List<StatusCard> cards=detectStatusCards(b,rawStatusBands);
         // Android screenshots can shift the very pale BUSY/COMPLETE border by a
@@ -121,13 +127,16 @@ public final class CargoDetector {
         // pixel threshold and avoids both duplicate dispatches and broad false blocks.
         mergeStatusCards(cards,detectStatusCardsTolerant(b));
         List<String> diagnostics=new ArrayList<>();
+        diagnostics.add((navGuard.proven?"NAV-GUARD[OK] ":"NAV-GUARD[MISS] ")+
+                "source="+navGuard.source+" contentTopY="+Math.round(navGuard.contentTopY)+
+                " ("+String.format(java.util.Locale.US,"%.3f",navGuard.contentTopY/Math.max(1f,h))+"H)");
         // rawStatusBands was computed once above and is reused both for card
         // reconstruction and local candidate blocking. Avoiding a second full
         // image border pass materially shortens every list scan.
         List<Candidate> fruit=new ArrayList<>(), seed=new ArrayList<>(), blocked=new ArrayList<>();
 
         boolean[] mask=new boolean[w*h];
-        int startY=(int)(h*0.16), endY=(int)(h*0.96);
+        int startY=(int)Math.max(h*0.16f,navGuard.contentTopY), endY=(int)(h*0.96);
         for(int y=startY;y<endY;y++) for(int x=0;x<w;x++) {
             Hsv v=hsv(b.getPixel(x,y));
             if(isFruitColor(v)) mask[y*w+x]=true;
@@ -140,6 +149,10 @@ public final class CargoDetector {
             double aspect=bw/Math.max(1,bh), fill=c.count/Math.max(1.0,bw*bh);
             if(aspect<0.48||aspect>2.0||fill<0.42) continue;
             PointF center=c.center();
+            if(center.y<navGuard.contentTopY) {
+                diagnostics.add("SKIP[NAV_GUARD] object @("+Math.round(center.x)+","+Math.round(center.y)+")");
+                continue;
+            }
             if(insideAnyCard(center,cards)) {
                 diagnostics.add("SKIP[STATUS_CARD] object @("+Math.round(center.x)+","+Math.round(center.y)+")");
                 continue;
@@ -172,10 +185,10 @@ public final class CargoDetector {
         // sometimes splits 冰藍花苗 into "冰藍" + "花苗", or 大花苗 into
         // "大" + "花苗". Re-join nearby OCR lines within the same grid column.
         // This keeps plain top-level 花苗 rejected while recovering the two special labels.
-        for(OcrItem item:seedlingLabelItems(ocr,w,h)) {
+        for(OcrItem item:seedlingLabelItems(ocr,w,h,navGuard.contentTopY)) {
             int col=Math.min(2,Math.max(0,(int)(item.rect.centerX()/colWidth)));
             float cx=(float)((col+0.5)*colWidth);
-            float cy=(float)Math.max(h*0.17, item.rect.top-h*0.070);
+            float cy=(float)Math.max(navGuard.contentTopY+h*0.020f, item.rect.top-h*0.070);
             PointF center=new PointF(cx,cy);
             if(insideAnyCardOrLabel(center,item.rect,cards)) {
                 diagnostics.add("SKIP[SEEDLING_STATUS_CARD] "+item.text+" col="+col+" y="+Math.round(center.y));
@@ -192,17 +205,31 @@ public final class CargoDetector {
             }
         }
 
-        return new Result(dedup(fruit,w,h),dedup(seed,w,h),dedup(blocked,w,h),cards,ocr,diagnostics);
+        return new Result(dedup(fruit,w,h),dedup(seed,w,h),dedup(blocked,w,h),cards,ocr,diagnostics,
+                navGuard.proven,navGuard.contentTopY,navGuard.source);
     }
 
     public static boolean isSeedlingLabel(String text) {
         String n=normalizeSeedlingOcr(text);
         if(n.equals("花苗")) return false;
 
+        // A real expedition seedling label contains exactly one 花苗 token.
+        // If Android OCR glues the top navigation tab "花苗" to a cargo label
+        // below it, the merged string contains two 花苗 tokens. Reject that
+        // outright instead of ever turning a navigation control into cargo.
+        if(countOccurrences(n,"花苗")!=1) return false;
+
         // Normal color-qualified seedlings, plus the two real labels that do not
         // contain 色花苗. normalizeSeedlingOcr() absorbs common Android OCR
         // variants such as 冰蓝 / 冰籃 and 花苖.
         return n.contains("色花苗") || n.contains("冰藍花苗") || n.contains("大花苗");
+    }
+
+    private static int countOccurrences(String s,String token) {
+        if(s==null||token==null||token.isEmpty()) return 0;
+        int count=0,from=0;
+        while((from=s.indexOf(token,from))>=0){count++;from+=token.length();}
+        return count;
     }
 
     /**
@@ -212,12 +239,12 @@ public final class CargoDetector {
      * The navigation label 花苗 is above the expedition content region and remains
      * rejected even if it appears by itself.
      */
-    private static List<OcrItem> seedlingLabelItems(List<OcrItem> ocr,int w,int h) {
+    private static List<OcrItem> seedlingLabelItems(List<OcrItem> ocr,int w,int h,float contentTopY) {
         List<OcrItem> out=new ArrayList<>();
         double colWidth=w/3.0;
 
         for(OcrItem item:ocr) {
-            if(item.rect.centerY()<h*0.16f) continue;
+            if(item.rect.centerY()<contentTopY) continue;
             if(isSeedlingLabel(item.text)) addOcrUnique(out,item,w,h);
         }
 
@@ -225,7 +252,7 @@ public final class CargoDetector {
             final int targetCol=col;
             List<OcrItem> local=new ArrayList<>();
             for(OcrItem item:ocr) {
-                if(item.rect.centerY()<h*0.16f) continue;
+                if(item.rect.centerY()<contentTopY) continue;
                 int itemCol=Math.min(2,Math.max(0,(int)(item.rect.centerX()/colWidth)));
                 if(itemCol==targetCol) local.add(item);
             }
@@ -265,6 +292,69 @@ public final class CargoDetector {
                     Math.abs(old.rect.centerY()-item.rect.centerY())<h*0.05f) return;
         }
         out.add(item);
+    }
+
+    private static final class NavGuard {
+        final boolean proven; final float contentTopY; final String source;
+        NavGuard(boolean proven,float contentTopY,String source){this.proven=proven;this.contentTopY=contentTopY;this.source=source;}
+    }
+
+    /**
+     * Device-independent safety boundary for the Expedition list.  Different
+     * phones place the bottom sheet / tab row at very different Y coordinates,
+     * so a fixed 0.16H crop is unsafe.  Anchor to the visible navigation row
+     * (記錄 / 皮克敏 / 花苗 / 探險 / 明信片) and never expose cargo above it.
+     */
+    private static NavGuard detectExpeditionNavGuard(List<OcrItem> items,int w,int h) {
+        List<String> tabNames=Arrays.asList("記錄","记录","皮克敏","花苗","探險","探险","明信片");
+        OcrItem expedition=null;
+        for(OcrItem i:items){
+            String t=normalize(i.text);
+            if((t.equals("探險")||t.equals("探险")) && i.rect.centerY()>h*0.08f && i.rect.centerY()<h*0.78f){
+                expedition=i; break;
+            }
+        }
+
+        float rowY=-1f; String source="none";
+        if(expedition!=null){ rowY=expedition.rect.centerY(); source="expedition-tab"; }
+        else {
+            // Fallback: find the Y cluster containing the most known navigation labels.
+            int best=0; float bestY=-1f;
+            for(OcrItem anchor:items){
+                String a=normalize(anchor.text); if(!tabNames.contains(a)) continue;
+                if(anchor.rect.centerY()<h*0.08f||anchor.rect.centerY()>h*0.78f) continue;
+                int count=0;
+                for(OcrItem j:items){
+                    if(!tabNames.contains(normalize(j.text))) continue;
+                    if(Math.abs(j.rect.centerY()-anchor.rect.centerY())<=h*0.035f) count++;
+                }
+                if(count>best){best=count;bestY=anchor.rect.centerY();}
+            }
+            if(best>=2){rowY=bestY;source="tab-cluster-"+best;}
+        }
+
+        if(rowY<0) return new NavGuard(false,h*0.20f,"unproven");
+
+        float maxBottom=0f; int rowTabs=0;
+        for(OcrItem i:items){
+            String t=normalize(i.text);
+            if(tabNames.contains(t)&&Math.abs(i.rect.centerY()-rowY)<=h*0.040f){
+                maxBottom=Math.max(maxBottom,i.rect.bottom); rowTabs++;
+            }
+        }
+        float contentTop=maxBottom+h*0.030f;
+
+        // When the section heading is visible just below the tabs, it is an even
+        // stronger lower boundary. Keep cargo below that heading as well.
+        for(OcrItem i:items){
+            String t=normalize(i.text);
+            if((t.contains("花苗和水果")||t.contains("水果和花苗")) && i.rect.centerY()>rowY && i.rect.centerY()<rowY+h*0.22f){
+                contentTop=Math.max(contentTop,i.rect.bottom+h*0.018f);
+                source += "+section-heading";
+            }
+        }
+        contentTop=Math.min(contentTop,h*0.82f);
+        return new NavGuard(rowTabs>=1,contentTop,source);
     }
 
     private static String normalizeSeedlingOcr(String s) {
