@@ -1,3 +1,27 @@
+# PikminPilot Android 0.3.4-alpha16
+
+## Expedition-list swipe settle
+
+This build intentionally changes only the **expedition fruit/seedling list scrolling** from alpha15:
+
+- List swipe travel reduced from about **30%** of the detected list height to about **24%**.
+- Swipe duration is 420 ms for a gentler drag with less fling/inertia.
+- After every list swipe the pilot waits a fixed **3000 ms**. During this settle window it performs **no screenshot, OCR, cargo detection, or coordinate selection**.
+- After the 3-second settle it captures a completely fresh frame and re-runs the list detector.
+- The filter-row / pink Pikmin colour-chip logic, CTA, GO, Green-X, BUSY/COMPLETE blocking, and copy-log behavior remain from alpha15.
+
+Expected log:
+
+```text
+EXPEDITION LIST SWIPE • amplitude=0.24H • direction=DOWN • (...) → (...)
+EXPEDITION LIST SETTLE ⏳ • 3000ms • no screenshot / OCR / detection
+ROUND ... • capture → OCR/list detector
+```
+
+Build marker: `BUILD 0.3.4-alpha16`
+
+---
+
 # PikminPilot Android 0.3.3-alpha15
 
 ## alpha14 stability fixes

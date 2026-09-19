@@ -1,3 +1,9 @@
+# Android 0.3.4-alpha16 list-scrolling note
+
+Alpha16 keeps alpha15's detector behavior, but makes expedition-list scrolling more conservative: **24% list-height travel** and a hard **3000 ms settle with no detection** after every list swipe. This is deliberately state/timing focused and does not alter the Pikmin filter-row detector.
+
+---
+
 # Android 0.3.3-alpha15 detector note
 
 The filter step intentionally diverges from the broad iOS magenta-pair search because Android sheet placement

@@ -58,7 +58,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.3-alpha15 • canonical chip lattice • no blind filter swipe • filter tap ACK • anchored Green-X");
+            emit("BUILD 0.3.4-alpha16 • 24% expedition-list swipe • 3000ms list settle • canonical chip lattice • anchored Green-X");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -177,12 +177,16 @@ public final class PilotController {
                 }
             }
             RectF r=Detector.activeContentRect(b);float x=(float)(r.left+r.width()*0.52);
-            // Smaller overlapping list motion: about 30% of the active content
-            // instead of 42%. This makes partially-visible rows much less likely
-            // to be jumped over on tall/narrow Android phones.
-            float sy=(float)(r.top+r.height()*(down?0.68:0.38)),ey=(float)(r.top+r.height()*(down?0.38:0.68));
-            emit("EXPEDITION LIST SWIPE • amplitude=0.30H • direction="+(down?"DOWN":"UP"));
-            swipeMapped(b,x,sy,x,ey,360,"EXPEDITION LIST");swipes++;sleep(cfg.fast?260:400);
+            // Smaller overlapping list motion: about 24% of the active content.
+            // The overlap is intentional so partially-visible fruit/seedling rows are
+            // not skipped, and we wait 3s after the gesture before the next capture.
+            float sy=(float)(r.top+r.height()*(down?0.64:0.40)),ey=(float)(r.top+r.height()*(down?0.40:0.64));
+            emit("EXPEDITION LIST SWIPE • amplitude=0.24H • direction="+(down?"DOWN":"UP")+
+                    " • ("+Math.round(x)+","+Math.round(sy)+") → ("+Math.round(x)+","+Math.round(ey)+")");
+            swipeMapped(b,x,sy,x,ey,420,"EXPEDITION LIST");
+            swipes++;
+            emit("EXPEDITION LIST SETTLE ⏳ • 3000ms • no screenshot / OCR / detection");
+            sleep(3000);
         }
         return null;
     }
@@ -710,7 +714,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.3-alpha15 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.4-alpha16 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));
