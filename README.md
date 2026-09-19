@@ -1,4 +1,19 @@
-# PikminPilot Android 0.2.9-alpha11
+# PikminPilot Android 0.3.1-alpha13
+
+## alpha13 stability / diagnostics changes
+
+This build focuses on cross-phone stability and diagnosability rather than adding new gameplay features.
+
+- Expedition list swipes now move about **30% of the active content height** (previously ~42%) with up to 12 passes per direction, creating more overlap so partially visible rows are less likely to be skipped.
+- ML Kit Chinese OCR is **reused** instead of recreated for every screenshot. This removes a major source of round-to-round pauses on some Android phones.
+- Green X now uses a **white-X diagonal topology + dark-green ring** structural detector (ported from the later iOS universal verifier) before the older green-blob fallback. A tap is sent only after a stable target is seen, and completion is counted only after the Expedition list is proven on two frames.
+- The cargo detector keeps iOS card-first rules and adds a device-colour-tolerant *paired-border* backup for BUSY/COMPLETE cards. It only blocks when a plausible card shape is reconstructed.
+- A short **recent-dispatch latch** blocks the exact same label/kind/location from being selected again for the next few rounds if a phone fails to render the BUSY border reliably.
+- Logs now have elapsed timestamps, stage names, categorized final errors, and `SCAN-DIAG` reasons for accepted/skipped candidates.
+- The app now has **Copy Log** and **Clear Log** buttons.
+
+Error codes include `E_CTA`, `E_FILTER`, `E_PIKMIN_GRID`, `E_GO`, `E_GREEN_X_ACK`, `E_GESTURE`, `E_SCREENSHOT`, and `E_OCR`.
+
 
 這版是針對 alpha10 的三個回歸修正。
 
@@ -38,7 +53,7 @@ Artifact 內下載 `app-debug.apk`。
 App Log 第一行應看到：
 
 ```text
-BUILD 0.2.9-alpha11 • fast geometric grid + stateful seedling CTA + direct-first filter + card-first safety
+BUILD 0.3.0-alpha12 • CTA stable-detect + ack/retry • fast grid • direct-first filter • card-first safety
 ```
 
 ## 這版最有用的 Log
@@ -51,3 +66,8 @@ PIKMIN FILTER AFTER SWIPE ✅
 PIKMIN GRID STABLE ✅ • geometric centres
 PIKMIN TAP 1/6 ...
 ```
+
+
+## 0.3.0-alpha12 CTA fix
+
+`前往探險` no longer treats an Android gesture callback as proof that Pikmin Bloom consumed the tap. The controller now waits for a stable CTA, prefers the actual outlined pill centre, retries only if the same CTA remains visible, and proceeds when the CTA disappears even if OCR misses the next selection header.

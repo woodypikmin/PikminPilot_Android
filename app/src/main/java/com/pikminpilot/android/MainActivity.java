@@ -2,6 +2,9 @@ package com.pikminpilot.android;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -67,8 +70,10 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.startPilot).setOnClickListener(v->startPilot());
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
+        findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.1-alpha13 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.2.9-alpha11 • fast geometric grid + stateful seedling CTA + direct-first filter + card-first safety");
+        appendLog("BUILD 0.3.1-alpha13 • diagnostic log • 30% list swipe • reusable OCR • structural Green-X • recent-dispatch latch");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -121,7 +126,14 @@ public class MainActivity extends Activity implements PilotController.Listener {
         new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),3000);
     }
 
-    private void appendLog(String s){if(log.length()>14000)log.delete(0,5000);log.append(s).append('\n');logView.setText(log.toString());}
+    private void copyLog(){
+        ClipboardManager cm=(ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
+        String text=log.toString();
+        cm.setPrimaryClip(ClipData.newPlainText("PikminPilot Log",text));
+        Toast.makeText(this,"Log 已複製（"+text.length()+" 字元）",Toast.LENGTH_SHORT).show();
+    }
+
+    private void appendLog(String s){if(log.length()>30000)log.delete(0,10000);log.append(s).append('\n');logView.setText(log.toString());}
     @Override public void onStatus(String status){runStatus.setText(status);}
     @Override public void onLog(String line){appendLog(line);}
 }

@@ -91,7 +91,7 @@
             </LinearLayout>
 
             <Button android:id="@+id/startPilot" android:layout_width="match_parent" android:layout_height="54dp" android:layout_marginTop="14dp" android:text="START PILOT" android:textStyle="bold" android:textColor="#FFFFFF" android:textSize="16sp" android:background="@drawable/button_primary"/>
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="開始前：先讓 Pikmin Bloom 停在『探險』三欄列表，再切回這裡按 START。新版會先確認列表，確認前不會亂滑或亂點。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="開始前：先讓 Pikmin Bloom 停在『探險』三欄列表，再切回這裡按 START。切回遊戲後固定等待 3 秒，再開始第一輪掃描。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
             <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="8dp" android:orientation="horizontal">
                 <Button android:id="@+id/openAccessibility" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="輔助使用" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
                 <Button android:id="@+id/stopPilot" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="立即停止" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
@@ -103,7 +103,11 @@
             <TextView android:id="@+id/runStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="尚未執行" android:textSize="15sp" android:textColor="@color/text_primary"/>
             <Button android:id="@+id/testScreenshot" android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="10dp" android:text="DEBUG • 截圖＋辨識測試" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
             <Button android:id="@+id/openPikmin" android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="7dp" android:text="開啟 Pikmin Bloom" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
-            <TextView android:id="@+id/logView" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="120dp" android:layout_marginTop="10dp" android:padding="10dp" android:background="@drawable/inner_bg" android:text="" android:textColor="#444444" android:textSize="11sp" android:fontFamily="monospace"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="7dp" android:orientation="horizontal">
+                <Button android:id="@+id/copyLog" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:text="複製 Log" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+                <Button android:id="@+id/clearLog" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginLeft="6dp" android:text="清除 Log" android:textAllCaps="false" android:background="@drawable/button_unselected"/>
+            </LinearLayout>
+            <TextView android:id="@+id/logView" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="160dp" android:layout_marginTop="10dp" android:padding="10dp" android:background="@drawable/inner_bg" android:text="" android:textColor="#444444" android:textSize="11sp" android:fontFamily="monospace" android:textIsSelectable="true"/>
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

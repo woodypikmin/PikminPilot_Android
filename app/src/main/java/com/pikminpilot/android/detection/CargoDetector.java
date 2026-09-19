@@ -66,9 +66,11 @@ public final class CargoDetector {
         public final List<Candidate> blocked;
         public final List<StatusCard> cards;
         public final List<OcrItem> ocr;
+        public final List<String> diagnostics;
         public Result(List<Candidate> fruits, List<Candidate> seedlings, List<Candidate> blocked,
-                      List<StatusCard> cards, List<OcrItem> ocr) {
+                      List<StatusCard> cards, List<OcrItem> ocr, List<String> diagnostics) {
             this.fruits=fruits; this.seedlings=seedlings; this.blocked=blocked; this.cards=cards; this.ocr=ocr;
+            this.diagnostics=diagnostics;
         }
         public List<Candidate> matching(PilotConfig.CargoMode mode) {
             List<Candidate> out=new ArrayList<>();
@@ -87,36 +89,41 @@ public final class CargoDetector {
             "葡萄","青葡萄","草莓","櫻桃","樱桃","藍莓","蓝莓","萊姆","莱姆","酸橙","柚子"
     );
 
-    private static TextRecognizer newRecognizer() {
-        return TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
-    }
+    // Reuse one ML Kit recognizer for the lifetime of the process. Creating and
+    // closing a recognizer on every screenshot caused multi-second stalls on
+    // some phones and made round-to-round timing wildly inconsistent. The Pilot
+    // worker is single-threaded, so one shared recognizer is safe here.
+    private static final TextRecognizer OCR_RECOGNIZER =
+            TextRecognition.getClient(new ChineseTextRecognizerOptions.Builder().build());
 
     public static List<OcrItem> recognize(Bitmap bitmap) throws Exception {
-        TextRecognizer recognizer=newRecognizer();
-        try {
-            Text result=Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap,0)), 8, TimeUnit.SECONDS);
-            List<OcrItem> out=new ArrayList<>();
-            for(Text.TextBlock block:result.getTextBlocks()) {
-                for(Text.Line line:block.getLines()) {
-                    Rect r=line.getBoundingBox();
-                    if(r!=null && line.getText()!=null && !line.getText().trim().isEmpty())
-                        out.add(new OcrItem(line.getText(),new RectF(r)));
-                }
+        Text result=Tasks.await(OCR_RECOGNIZER.process(InputImage.fromBitmap(bitmap,0)), 8, TimeUnit.SECONDS);
+        List<OcrItem> out=new ArrayList<>();
+        for(Text.TextBlock block:result.getTextBlocks()) {
+            for(Text.Line line:block.getLines()) {
+                Rect r=line.getBoundingBox();
+                if(r!=null && line.getText()!=null && !line.getText().trim().isEmpty())
+                    out.add(new OcrItem(line.getText(),new RectF(r)));
             }
-            return out;
-        } finally {
-            recognizer.close();
         }
+        return out;
     }
 
     public static Result scan(Bitmap b) throws Exception {
         int w=b.getWidth(), h=b.getHeight();
         List<OcrItem> ocr=recognize(b);
-        List<StatusCard> cards=detectStatusCards(b);
-        // Keep raw border bands too. They are the earliest card-first evidence
-        // and let Android conservatively block a candidate even if anti-aliasing
-        // prevents reconstruction of a complete/partial StatusCard rectangle.
         List<Band> rawStatusBands=horizontalBands(b);
+        List<StatusCard> cards=detectStatusCards(b,rawStatusBands);
+        // Android screenshots can shift the very pale BUSY/COMPLETE border by a
+        // few RGB values depending on device colour management. Merge a second,
+        // slightly tolerant border pass, but only when it reconstructs a real
+        // paired/partial card shape. This is safer than simply lowering every
+        // pixel threshold and avoids both duplicate dispatches and broad false blocks.
+        mergeStatusCards(cards,detectStatusCardsTolerant(b));
+        List<String> diagnostics=new ArrayList<>();
+        // rawStatusBands was computed once above and is reused both for card
+        // reconstruction and local candidate blocking. Avoiding a second full
+        // image border pass materially shortens every list scan.
         List<Candidate> fruit=new ArrayList<>(), seed=new ArrayList<>(), blocked=new ArrayList<>();
 
         boolean[] mask=new boolean[w*h];
@@ -133,7 +140,10 @@ public final class CargoDetector {
             double aspect=bw/Math.max(1,bh), fill=c.count/Math.max(1.0,bw*bh);
             if(aspect<0.48||aspect>2.0||fill<0.42) continue;
             PointF center=c.center();
-            if(insideAnyCard(center,cards)) continue;
+            if(insideAnyCard(center,cards)) {
+                diagnostics.add("SKIP[STATUS_CARD] object @("+Math.round(center.x)+","+Math.round(center.y)+")");
+                continue;
+            }
             int col=Math.min(2,Math.max(0,(int)(center.x/colWidth)));
             double expected=(col+0.5)*colWidth;
             if(Math.abs(center.x-expected)>colWidth*0.30) continue;
@@ -145,10 +155,18 @@ public final class CargoDetector {
             // the same column sits inside this item's vertical envelope.  This is
             // deliberately conservative for already-carried seedlings.
             RectF labelProbe=labelRectNearObject(c.rect,w,h,ocr);
-            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,labelProbe)) continue;
+            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,labelProbe)) {
+                diagnostics.add("SKIP[STATUS_BORDER] label="+label+" col="+col+" y="+Math.round(center.y));
+                continue;
+            }
             Kind kind=isKnownFruitLabel(label)?Kind.FRUIT:(isSeedlingLabel(label)?Kind.SEEDLING:Kind.UNKNOWN);
             Candidate candidate=new Candidate(center,c.rect,kind,label);
-            if(kind==Kind.FRUIT) fruit.add(candidate); else if(kind==Kind.SEEDLING) seed.add(candidate); else blocked.add(candidate);
+            if(kind==Kind.FRUIT) { fruit.add(candidate); diagnostics.add("ACCEPT[FRUIT] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")"); }
+            else if(kind==Kind.SEEDLING) { seed.add(candidate); diagnostics.add("ACCEPT[SEEDLING] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")"); }
+            else {
+                blocked.add(candidate);
+                if(label!=null&&!label.trim().isEmpty()) diagnostics.add("SKIP[UNKNOWN_LABEL] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")");
+            }
         }
 
         // OCR-first seedling fallback. In addition to direct one-line labels, Android OCR
@@ -160,14 +178,23 @@ public final class CargoDetector {
             float cx=(float)((col+0.5)*colWidth);
             float cy=(float)Math.max(h*0.17, item.rect.top-h*0.070);
             PointF center=new PointF(cx,cy);
-            if(insideAnyCardOrLabel(center,item.rect,cards)) continue;
-            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,item.rect)) continue;
+            if(insideAnyCardOrLabel(center,item.rect,cards)) {
+                diagnostics.add("SKIP[SEEDLING_STATUS_CARD] "+item.text+" col="+col+" y="+Math.round(center.y));
+                continue;
+            }
+            if(hasLocalStatusBorderEvidence(rawStatusBands,h,col,center,item.rect)) {
+                diagnostics.add("SKIP[SEEDLING_STATUS_BORDER] "+item.text+" col="+col+" y="+Math.round(center.y));
+                continue;
+            }
             RectF rect=new RectF((float)(cx-w*0.060),(float)(cy-h*0.045),(float)(cx+w*0.060),(float)(cy+h*0.045));
             Candidate candidate=new Candidate(center,rect,Kind.SEEDLING,item.text);
-            if(!containsNear(seed,candidate,w*0.10,h*0.08)) seed.add(candidate);
+            if(!containsNear(seed,candidate,w*0.10,h*0.08)) {
+                seed.add(candidate);
+                diagnostics.add("ACCEPT[SEEDLING_OCR] "+item.text+" @("+Math.round(center.x)+","+Math.round(center.y)+")");
+            }
         }
 
-        return new Result(dedup(fruit,w,h),dedup(seed,w,h),dedup(blocked,w,h),cards,ocr);
+        return new Result(dedup(fruit,w,h),dedup(seed,w,h),dedup(blocked,w,h),cards,ocr,diagnostics);
     }
 
     public static boolean isSeedlingLabel(String text) {
@@ -434,8 +461,80 @@ public final class CargoDetector {
     // --- status-card detection ported from FruitDetector.swift ---
     private static final class Band { final CardState state; final int col,y0,y1; Band(CardState s,int c,int a,int b){state=s;col=c;y0=a;y1=b;} double center(){return(y0+y1)/2.0;} }
 
-    private static List<StatusCard> detectStatusCards(Bitmap b) {
-        int w=b.getWidth(),h=b.getHeight(); List<Band> bands=horizontalBands(b); List<StatusCard> cards=new ArrayList<>();
+    private static void mergeStatusCards(List<StatusCard> base,List<StatusCard> extra){
+        for(StatusCard c:extra){
+            boolean duplicate=false;
+            for(StatusCard old:base){
+                RectF inter=new RectF();
+                if(inter.setIntersect(old.rect,c.rect)){
+                    double smaller=Math.min(old.rect.width()*old.rect.height(),c.rect.width()*c.rect.height());
+                    if(smaller>0&&inter.width()*inter.height()/smaller>0.72){duplicate=true;break;}
+                }
+            }
+            if(!duplicate)base.add(c);
+        }
+        base.sort(Comparator.comparingDouble(c->c.rect.top));
+    }
+
+    /**
+     * Device-colour tolerant backup for BUSY/COMPLETE borders. The original iOS
+     * RGB thresholds remain the primary detector. This backup is deliberately
+     * allowed to block only when TWO long pastel borders reconstruct a plausible
+     * card height, which keeps the looser colour range from blocking ordinary
+     * expedition artwork.
+     */
+    private static List<StatusCard> detectStatusCardsTolerant(Bitmap b){
+        int w=b.getWidth(),h=b.getHeight();
+        List<Band> bands=horizontalBandsTolerant(b);
+        List<StatusCard> cards=new ArrayList<>();
+        for(CardState state:new CardState[]{CardState.BUSY,CardState.COMPLETE}) for(int col=0;col<3;col++){
+            List<Band> local=new ArrayList<>();
+            for(Band x:bands)if(x.state==state&&x.col==col)local.add(x);
+            local.sort(Comparator.comparingDouble(Band::center));
+            for(int i=0;i<local.size();i++){
+                for(int j=i+1;j<local.size();j++){
+                    double d=local.get(j).center()-local.get(i).center();
+                    if(d>h*0.180)break;
+                    if(d>=h*0.100&&d<=h*0.180){
+                        cards.add(new StatusCard(CardState.BLOCKED,cardRect(col,local.get(i).y0,local.get(j).y1,w)));
+                        break;
+                    }
+                }
+            }
+        }
+        return cards;
+    }
+
+    private static List<Band> horizontalBandsTolerant(Bitmap b){
+        int w=b.getWidth(),h=b.getHeight();double cw=w/3.0;List<Object[]> hits=new ArrayList<>();
+        for(int y=(int)(h*0.16);y<(int)(h*0.98);y++)for(int col=0;col<3;col++){
+            int x0=Math.max(0,(int)(col*cw+w*0.030)),x1=Math.min(w-1,(int)((col+1)*cw-w*0.030));
+            if(x1<=x0)continue;int total=x1-x0+1,busy=0,complete=0;
+            for(int x=x0;x<=x1;x++){int p=b.getPixel(x,y);if(isBusyTolerant(p))busy++;if(isCompleteTolerant(p))complete++;}
+            if((double)busy/total>=0.42)hits.add(new Object[]{CardState.BUSY,col,y});
+            if((double)complete/total>=0.42)hits.add(new Object[]{CardState.COMPLETE,col,y});
+        }
+        List<Band> out=new ArrayList<>();
+        for(CardState state:new CardState[]{CardState.BUSY,CardState.COMPLETE})for(int col=0;col<3;col++){
+            List<Integer> ys=new ArrayList<>();for(Object[] z:hits)if(z[0]==state&&((Integer)z[1])==col)ys.add(((Integer)z[2]));
+            ys.sort(Integer::compareTo);if(ys.isEmpty())continue;int start=ys.get(0),prev=start;
+            for(int k=1;k<ys.size();k++){int y=ys.get(k);if(y<=prev+1)prev=y;else{out.add(new Band(state,col,start,prev));start=prev=y;}}
+            out.add(new Band(state,col,start,prev));
+        }
+        return out;
+    }
+
+    private static boolean isBusyTolerant(int p){
+        int r=(p>>16)&255,g=(p>>8)&255,b=p&255,mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
+        return r>=218&&g>=205&&b>=205&&r>=g+2&&r>=b+1&&mx-mn<=52;
+    }
+    private static boolean isCompleteTolerant(int p){
+        int r=(p>>16)&255,g=(p>>8)&255,b=p&255,mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
+        return g>=212&&r>=192&&b>=192&&g>=r+2&&g>=b+1&&mx-mn<=58;
+    }
+
+    private static List<StatusCard> detectStatusCards(Bitmap b,List<Band> bands) {
+        int w=b.getWidth(),h=b.getHeight(); List<StatusCard> cards=new ArrayList<>();
         for(CardState state:new CardState[]{CardState.BUSY,CardState.COMPLETE}) for(int col=0;col<3;col++) {
             List<Band> local=new ArrayList<>();for(Band x:bands)if(x.state==state&&x.col==col)local.add(x);local.sort(Comparator.comparingDouble(Band::center));
             Set<Integer> used=new HashSet<>();

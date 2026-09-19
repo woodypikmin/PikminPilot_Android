@@ -154,6 +154,89 @@ public final class Detector {
     }
 
     /**
+     * Universal detector for the outlined green/teal "前往探險" pill.
+     *
+     * A connected-component detector is fragile here because the pill is only an
+     * outline: the top/bottom strokes can be separate components and their pixel
+     * thickness changes with resolution / vendor scaling. Instead, scan each row
+     * for a long horizontal teal run and pair a top edge with a matching bottom
+     * edge. This uses proportions only and therefore survives different Android
+     * aspect ratios and UI density much better.
+     */
+    public static PointF detectExpeditionCtaPill(Bitmap b) {
+        final int w=b.getWidth(), h=b.getHeight();
+        final int x0=(int)(w*0.20), x1=(int)(w*0.80);
+        final int y0=(int)(h*0.28), y1=(int)(h*0.91);
+        final int minRun=Math.max(18,(int)(w*0.15));
+
+        class RowRun {
+            final int y,start,end,len;
+            RowRun(int y,int start,int end){this.y=y;this.start=start;this.end=end;this.len=end-start+1;}
+            float cx(){return (start+end)*0.5f;}
+        }
+        List<RowRun> rows=new ArrayList<>();
+        for(int y=y0;y<y1;y++){
+            int bestStart=-1,bestEnd=-1,bestLen=0;
+            int runStart=-1,lastGood=-1,gap=0;
+            for(int x=x0;x<x1;x++){
+                Hsv v=hsv(b.getPixel(x,y));
+                boolean teal=v.h>=125&&v.h<=205&&v.s>=0.18&&v.v>=0.30;
+                if(teal){
+                    if(runStart<0)runStart=x;
+                    lastGood=x;gap=0;
+                }else if(runStart>=0){
+                    // Allow a tiny antialias/text gap without breaking the line.
+                    gap++;
+                    if(gap>2){
+                        int end=lastGood;
+                        int len=end-runStart+1;
+                        if(len>bestLen){bestLen=len;bestStart=runStart;bestEnd=end;}
+                        runStart=-1;lastGood=-1;gap=0;
+                    }
+                }
+            }
+            if(runStart>=0){
+                int len=lastGood-runStart+1;
+                if(len>bestLen){bestLen=len;bestStart=runStart;bestEnd=lastGood;}
+            }
+            if(bestLen>=minRun) rows.add(new RowRun(y,bestStart,bestEnd));
+        }
+
+        PointF bestPoint=null;
+        double bestScore=Double.POSITIVE_INFINITY;
+        final float minSep=h*0.024f, maxSep=h*0.095f;
+        for(int i=0;i<rows.size();i++){
+            RowRun a=rows.get(i);
+            for(int j=i+1;j<rows.size();j++){
+                RowRun z=rows.get(j);
+                float sep=z.y-a.y;
+                if(sep<minSep)continue;
+                if(sep>maxSep)break;
+                float overlap=Math.max(0,Math.min(a.end,z.end)-Math.max(a.start,z.start)+1);
+                if(overlap<Math.min(a.len,z.len)*0.62f)continue;
+                if(Math.abs(a.cx()-z.cx())>w*0.065f)continue;
+
+                float cx=(a.cx()+z.cx())*0.5f;
+                float cy=(a.y+z.y)*0.5f;
+                float width=(a.len+z.len)*0.5f;
+                float nx=cx/Math.max(1f,w), ny=cy/Math.max(1f,h);
+                float nw=width/Math.max(1f,w), ns=sep/Math.max(1f,h);
+                if(nx<0.28f||nx>0.72f)continue;
+                if(nw<0.15f||nw>0.58f)continue;
+
+                // Centre/shape dominate. Vertical position is only a weak bias so
+                // tall/short phones and different bottom-sheet heights still work.
+                double score=Math.abs(nx-0.50)*2.0+
+                        Math.abs(nw-0.30)*1.0+
+                        Math.abs(ns-0.048)*1.1+
+                        Math.abs(ny-0.70)*0.10;
+                if(score<bestScore){bestScore=score;bestPoint=new PointF(cx,cy);}
+            }
+        }
+        return bestPoint;
+    }
+
+    /**
      * Seedling detail pages contain a wide, low, teal/green outlined
      * "前往探險" pill.  OCR is still preferred by the controller, but this
      * detector is a layout-independent fallback for phones where ML Kit misses
@@ -348,7 +431,86 @@ public final class Detector {
                 .max(Comparator.comparingInt(c->c.count)).map(Component::center).orElse(null);
     }
 
+    /**
+     * Universal carrying-close detector. Primary path is the white X glyph plus
+     * surrounding dark-green ring, ported from the later iOS universal detector.
+     * Only if that structural proof fails do we use the older green-component
+     * fallback. This sharply reduces false positives from grass/flowers.
+     */
     public static PointF detectCarryingClose(Bitmap b) {
+        PointF glyph=detectCarryingCloseGlyph(b);
+        return glyph!=null?glyph:detectCarryingCloseLegacy(b);
+    }
+
+    public static PointF detectCarryingCloseGlyph(Bitmap b) {
+        int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
+        if(vp.width()<=1||vp.height()<=1)return null;
+        int x0=Math.max(0,(int)Math.floor(vp.left));
+        int x1=Math.min(w,(int)Math.ceil(vp.left+vp.width()*0.30f));
+        int y0=Math.max(0,(int)Math.floor(vp.top+vp.height()*0.74f));
+        int y1=Math.min(h,(int)Math.ceil(vp.bottom));
+        if(x1<=x0||y1<=y0)return null;
+
+        int rw=x1-x0,rh=y1-y0; boolean[] white=new boolean[rw*rh];
+        for(int y=y0;y<y1;y++)for(int x=x0;x<x1;x++){
+            Hsv v=hsv(b.getPixel(x,y));
+            if(v.s<=0.22&&v.v>=0.80)white[(y-y0)*rw+(x-x0)]=true;
+        }
+
+        double vpArea=Math.max(1.0,vp.width()*vp.height());
+        double shortEdge=Math.max(1.0,Math.min(vp.width(),vp.height()));
+        PointF bestPoint=null; double bestScore=-1e9;
+        for(Component local:components(white,rw,rh)){
+            RectF rect=new RectF(local.rect); rect.offset(x0,y0);
+            PointF center=new PointF(rect.centerX(),rect.centerY());
+            double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
+            double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
+            if(nx<0||nx>0.30||ny<0.74||ny>1.0)continue;
+            double wf=rect.width()/Math.max(1.0,vp.width()),hf=rect.height()/Math.max(1.0,vp.height());
+            if(wf<0.008||wf>0.055||hf<0.006||hf>0.055)continue;
+            double aspect=rect.width()/Math.max(1.0,rect.height());
+            if(aspect<0.48||aspect>1.85)continue;
+            double rectArea=Math.max(1.0,rect.width()*rect.height());
+            double fill=local.count/rectArea,areaFraction=local.count/vpArea;
+            if(fill<0.12||fill>0.72||areaFraction<0.000008||areaFraction>0.0010)continue;
+
+            int rx0=Math.max(0,(int)Math.floor(rect.left)),rx1=Math.min(w,(int)Math.ceil(rect.right));
+            int ry0=Math.max(0,(int)Math.floor(rect.top)),ry1=Math.min(h,(int)Math.ceil(rect.bottom));
+            int glyphWhite=0,diagA=0,diagB=0;
+            for(int y=ry0;y<ry1;y++)for(int x=rx0;x<rx1;x++){
+                Hsv v=hsv(b.getPixel(x,y)); if(v.s>0.22||v.v<0.80)continue; glyphWhite++;
+                double u=(x+0.5-rect.left)/Math.max(1.0,rect.width());
+                double vv=(y+0.5-rect.top)/Math.max(1.0,rect.height());
+                if(Math.abs(vv-u)<=0.19)diagA++;
+                if(Math.abs(vv-(1.0-u))<=0.19)diagB++;
+            }
+            if(glyphWhite<=0)continue;
+            double da=(double)diagA/glyphWhite,db=(double)diagB/glyphWhite;
+            if(da<0.34||db<0.34)continue;
+
+            double glyphScale=Math.max(rect.width(),rect.height());
+            double inner=Math.max(glyphScale*0.62,shortEdge*0.007);
+            double outer=Math.max(glyphScale*2.45,shortEdge*0.045);
+            double inner2=inner*inner,outer2=outer*outer;
+            int sx0=Math.max(0,(int)Math.floor(center.x-outer)),sx1=Math.min(w-1,(int)Math.ceil(center.x+outer));
+            int sy0=Math.max(0,(int)Math.floor(center.y-outer)),sy1=Math.min(h-1,(int)Math.ceil(center.y+outer));
+            int step=Math.max(1,(int)(shortEdge/900.0));
+            int total=0,green=0;
+            for(int y=sy0;y<=sy1;y+=step)for(int x=sx0;x<=sx1;x+=step){
+                double dx=x+0.5-center.x,dy=y+0.5-center.y,d2=dx*dx+dy*dy;
+                if(d2<inner2||d2>outer2)continue;
+                Hsv v=hsv(b.getPixel(x,y));
+                if(v.h>=105&&v.h<=205&&v.s>=0.22&&v.v>=0.14&&v.v<=0.92)green++;
+                total++;
+            }
+            if(total<=0)continue; double gf=(double)green/total; if(gf<0.72)continue;
+            double score=gf*2.0+Math.min(da,db)+fill*0.20-nx*0.08-Math.abs(ny-0.91)*0.05;
+            if(score>bestScore){bestScore=score;bestPoint=center;}
+        }
+        return bestPoint;
+    }
+
+    private static PointF detectCarryingCloseLegacy(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         int x0=Math.max(0,(int)vp.left),x1=Math.min(w,(int)(vp.left+vp.width()*0.42));
         int y0=Math.max(0,(int)(vp.top+vp.height()*0.60)),y1=Math.min(h,(int)vp.bottom);
