@@ -1,23 +1,52 @@
-# PikminPilot Android 0.3.5-alpha17
+# PikminPilot Android 0.3.7-alpha19
 
-Safety hotfix based on alpha16.
+## alpha19 focused fixes
+- **GO is bottom-right only.** `detectActiveGo()` is restored to the iOS-proven ROI (`x >= 0.60W`, `y >= 0.76H`) plus a lower-right centre guard, so the centre-bottom drone/expedition icon cannot be selected as GO.
+- **Fruit OCR is exclusion-first.** After an AVAILABLE 3-column visual object is found, any non-empty nearby OCR is treated as fruit unless it contains seedling/gift text. This removes dependence on exact fruit spelling such as `檸檬`, `青蘋果`, etc.
+- Explicit non-fruit exclusions include `花苗`, `禮/礼`, `贈/赠`, `稀有`, `gift/present`, and postcard text. Seedling handling itself is unchanged.
+- Existing 24% list swipe, 3000 ms settle, NAV-GUARD, filter lattice, anchored Green-X, and accessibility auto-resume are retained.
 
-## Main change: dynamic Expedition navigation guard
 
-Different phones place the Pikmin Bloom bottom sheet and the top navigation row at different Y positions. Alpha17 no longer assumes that cargo starts below a fixed `0.16H`. Each list scan OCR-locates the navigation row (`記錄 / 皮克敏 / 花苗 / 探險 / 明信片`) and computes a live `contentTopY`.
+Reliability hotfix based directly on alpha17.
 
-- Fruit/seedling candidates above `contentTopY` are never tappable.
-- Plain `花苗` remains rejected.
-- OCR strings containing more than one `花苗` token are rejected, preventing a glued navigation-tab + cargo label from becoming a false seedling.
-- If the navigation guard cannot be proven, Pilot does **not tap and does not swipe**. It waits 3 seconds and retries; after 5 failures it stops safely.
-- Alpha16's 24% expedition-list swipe and 3000 ms post-swipe settle are unchanged.
+## Fixes in this build
+
+### Accessibility service reconnect / resume
+A real alpha17 log showed Android destroying the AccessibilityService during round 4 (`STOP • Accessibility service stopped`) and binding it again several minutes later. Alpha17 treated service destruction as a user stop, so the run could never continue.
+
+Alpha18 now treats temporary AccessibilityService loss as recoverable:
+
+- current round/config/completed count are preserved in the same app process;
+- automation pauses instead of calling `stop()`;
+- screenshot/tap/swipe operations wait for Android to rebind the service;
+- when the service reconnects, the current stage resumes automatically;
+- the normal Stop button still stops immediately;
+- reconnect wait has a 10-minute safety timeout.
 
 Useful log lines:
 
 ```text
-NAV-GUARD • proven=true • source=expedition-tab ...
-SCAN-DIAG SKIP[NAV_GUARD] ...
-SCAN-DIAG SKIP[NAV_GUARD_UNPROVEN] ...
+ACCESSIBILITY LOST ⚠️ ... automation PAUSED
+ACCESSIBILITY WAIT ⏸️ ... preserving round state
+ACCESSIBILITY RECONNECTED ✅ ... resumeStage=...
+ACCESSIBILITY WAIT END ✅
 ```
 
-Build marker: `BUILD 0.3.5-alpha17`.
+### Lemon OCR repair
+On real Android logs, ML Kit rendered `檸檬` as `檸樣` and sometimes `樟樣`, causing a valid lemon to be logged as `SKIP[UNKNOWN_LABEL]`. Alpha18 adds a narrow lemon repair after the visual fruit component has already been detected in that cell.
+
+Accepted OCR variants now include:
+
+- `檸檬` / `柠檬`
+- `檸樣` / `柠样`
+- observed `樟樣` / `樟样`
+
+Repaired lemons appear as:
+
+```text
+SCAN-DIAG ACCEPT[FRUIT:LEMON_OCR_REPAIR] 檸樣:...
+```
+
+Alpha17's 24% list swipe, 3000 ms settle, dynamic NAV-GUARD, canonical filter lattice, copy-log UI and anchored Green-X are unchanged.
+
+Build marker: `BUILD 0.3.7-alpha19`.

@@ -606,17 +606,35 @@ public final class Detector {
 
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
-        int x0=Math.max(0,(int)(vp.left+vp.width()*0.42)),x1=Math.min(w,(int)vp.right);
-        int y0=Math.max(0,(int)(vp.top+vp.height()*0.58)),y1=Math.min(h,(int)vp.bottom);
+
+        // Direct port of the proven iOS detectActiveGO search window.  The GO
+        // commit control is the large warm/red circle in the BOTTOM-RIGHT.  The
+        // previous Android port widened this to x>=0.42 / y>=0.58, which also
+        // exposed the centre-bottom expedition/drone icon and could tap it.
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.60));
+        int x1=Math.min(w,(int)vp.right);
+        int y0=Math.max(0,(int)(vp.top+vp.height()*0.76));
+        int y1=Math.min(h,(int)vp.bottom);
         boolean[] mask=new boolean[w*h];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
-            Hsv v=hsv(b.getPixel(x,y)); boolean warm=v.h<60||v.h>336;
+            Hsv v=hsv(b.getPixel(x,y));
+            boolean warm=v.h<60||v.h>336;
             if(warm&&v.s>0.27&&v.v>0.56) mask[y*w+x]=true;
         }
         double area=Math.max(1,vp.width()*vp.height());
-        return components(mask,w,h).stream()
-                .filter(c->c.count>=area*0.00075&&c.rect.width()>=vp.width()*0.06&&c.rect.height()>=vp.height()*0.025)
-                .max(Comparator.comparingInt(c->c.count)).map(Component::center).orElse(null);
+        PointF best=null; int bestCount=-1;
+        for(Component c:components(mask,w,h)) {
+            if(c.count<area*0.0010) continue;
+            if(c.rect.width()<vp.width()*0.07||c.rect.height()<vp.height()*0.04) continue;
+            PointF center=c.center();
+            double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
+            double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
+            // Additional Android safety: even a large warm Pikmin/art component
+            // cannot be GO unless its centre is actually in the lower-right zone.
+            if(nx<0.68||ny<0.78) continue;
+            if(c.count>bestCount){bestCount=c.count;best=center;}
+        }
+        return best;
     }
 
     /**

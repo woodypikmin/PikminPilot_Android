@@ -27,6 +27,8 @@ public final class PilotController {
     private final Handler main=new Handler(Looper.getMainLooper());
     private final AtomicBoolean running=new AtomicBoolean(false);
     private volatile PilotAccessibilityService service;
+    private final Object serviceLock=new Object();
+    private volatile long serviceLostUptime=0L;
     private volatile Listener listener;
     private volatile int completed=0;
     private volatile String currentStage="IDLE";
@@ -43,7 +45,36 @@ public final class PilotController {
     public void setListener(Listener l){listener=l;}
     public boolean isRunning(){return running.get();}
     public int completed(){return completed;}
-    public void onServiceReady(PilotAccessibilityService s){service=s;emit("Accessibility service ready ✅");}
+
+    public void onServiceReady(PilotAccessibilityService s){
+        boolean wasLost=serviceLostUptime>0L;
+        long lostFor=wasLost?Math.max(0L,SystemClock.elapsedRealtime()-serviceLostUptime):0L;
+        service=s; serviceLostUptime=0L;
+        synchronized(serviceLock){serviceLock.notifyAll();}
+        if(running.get()&&wasLost){
+            emit("ACCESSIBILITY RECONNECTED ✅ • paused="+String.format(java.util.Locale.US,"%.1fs",lostFor/1000.0)+
+                    " • resumeStage="+currentStage);
+            status("輔助使用已恢復 • 繼續執行");
+        }else emit("Accessibility service ready ✅");
+    }
+
+    public void onServiceDisconnected(PilotAccessibilityService s,String reason){
+        boolean changed=false;
+        if(service==s || PilotAccessibilityService.get()==null){
+            if(service!=null){service=null;changed=true;}
+            if(serviceLostUptime==0L)serviceLostUptime=SystemClock.elapsedRealtime();
+        }
+        synchronized(serviceLock){serviceLock.notifyAll();}
+        if(changed&&running.get()){
+            emit("ACCESSIBILITY LOST ⚠️ • reason="+reason+" • stage="+currentStage+
+                    " • automation PAUSED; waiting for Android to reconnect service");
+            status("輔助使用暫時中斷 • 等待系統重新連線");
+        }
+    }
+
+    public void onServiceInterrupted(PilotAccessibilityService s){
+        if(running.get()) emit("ACCESSIBILITY INTERRUPT ⚠️ • stage="+currentStage+" • service still bound");
+    }
 
     public void start(PilotConfig cfg){
         if(running.getAndSet(true)) return;
@@ -51,14 +82,17 @@ public final class PilotController {
         worker.execute(()->run(cfg));
     }
 
-    public void stop(String reason){if(running.getAndSet(false))emit("STOP • "+reason);}
+    public void stop(String reason){
+        if(running.getAndSet(false))emit("STOP • "+reason);
+        synchronized(serviceLock){serviceLock.notifyAll();}
+    }
     public void stop(){stop("user requested");}
 
     private void run(PilotConfig cfg){
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.5-alpha17 • 24% list swipe • 3000ms settle • dynamic NAV-GUARD • canonical chip lattice • anchored Green-X");
+            emit("BUILD 0.3.7-alpha19 • exclusion-first fruit OCR • iOS bottom-right GO • accessibility auto-resume • anchored Green-X");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -506,7 +540,8 @@ public final class PilotController {
         int count=Math.min(desired,grid.size());
         for(int i=0;i<count&&running.get();i++){
             PointF q=grid.get(i);
-            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(frame,q.x,q.y,cfg.fast?90:95)
+            PilotAccessibilityService activeService=waitForService();
+            PilotAccessibilityService.TapResult tr=activeService.tapFromBitmap(frame,q.x,q.y,cfg.fast?90:95)
                     .get(3,TimeUnit.SECONDS);
             emit("PIKMIN TAP "+(i+1)+"/"+desired+" • display=("+Math.round(tr.displayX)+","+
                     Math.round(tr.displayY)+") • dispatch="+
@@ -566,7 +601,8 @@ public final class PilotController {
                 anchorFrame=fresh;
             }
 
-            PilotAccessibilityService.TapResult tr=service.tapFromBitmap(
+            PilotAccessibilityService activeService=waitForService();
+            PilotAccessibilityService.TapResult tr=activeService.tapFromBitmap(
                     anchorFrame,anchor.x,anchor.y,cfg.fast?105:125).get(4,TimeUnit.SECONDS);
             emit("GREEN X TAP #"+attempt+" • anchored screenshot=("+
                     Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
@@ -688,12 +724,63 @@ public final class PilotController {
     private static final class PointAndBitmap{final PointF p;final Bitmap b;PointAndBitmap(PointF p,Bitmap b){this.p=p;this.b=b;}}
     private static final class CargoAndBitmap{final CargoDetector.Candidate item;final Bitmap b;CargoAndBitmap(CargoDetector.Candidate i,Bitmap b){item=i;this.b=b;}}
 
-    private void requireService(){if(service==null)service=PilotAccessibilityService.get();if(service==null)throw new IllegalStateException("Accessibility service is not enabled");}
-    private Bitmap shot()throws Exception{requireService();Bitmap b=service.screenshot().get(4,TimeUnit.SECONDS);if(b==null)throw new RuntimeException("screenshot returned null");return b;}
-    private void tap(float x,float y,long ms)throws Exception{if(!running.get())throw new InterruptedException("stopped");if(!service.tap(x,y,ms).get(3,TimeUnit.SECONDS))throw new RuntimeException("tap cancelled");}
+    private PilotAccessibilityService waitForService()throws Exception{
+        PilotAccessibilityService s=service;
+        if(s==null){s=PilotAccessibilityService.get();if(s!=null)service=s;}
+        if(s!=null)return s;
+
+        // If Pilot is not running (e.g. Test Screenshot), fail immediately.
+        if(!running.get())throw new IllegalStateException("Accessibility service is not enabled");
+
+        long started=SystemClock.elapsedRealtime();
+        boolean announced=false;
+        while(running.get()){
+            s=service;
+            if(s==null){s=PilotAccessibilityService.get();if(s!=null)service=s;}
+            if(s!=null){
+                if(announced)emit("ACCESSIBILITY WAIT END ✅ • service available • stage="+currentStage);
+                return s;
+            }
+            if(!announced){
+                announced=true;
+                emit("ACCESSIBILITY WAIT ⏸️ • no bound service • stage="+currentStage+" • preserving round state");
+            }
+            if(SystemClock.elapsedRealtime()-started>10*60*1000L)
+                throw new RuntimeException("Accessibility service reconnect timeout (10 min)");
+            synchronized(serviceLock){serviceLock.wait(1000L);}
+        }
+        throw new InterruptedException("stopped");
+    }
+
+    private void requireService()throws Exception{waitForService();}
+    private Bitmap shot()throws Exception{
+        Throwable last=null;
+        for(int attempt=1;attempt<=3&&running.get();attempt++){
+            PilotAccessibilityService s=waitForService();
+            try{
+                Bitmap b=s.screenshot().get(5,TimeUnit.SECONDS);
+                if(b==null)throw new RuntimeException("screenshot returned null");
+                return b;
+            }catch(Throwable t){
+                last=t;
+                boolean serviceChanged=(service!=s || PilotAccessibilityService.get()!=s);
+                emit("SCREENSHOT RETRY ⚠️ • attempt="+attempt+"/3 • serviceChanged="+serviceChanged+
+                        " • error="+(t.getMessage()==null?t.getClass().getSimpleName():t.getMessage()));
+                if(attempt<3) sleep(serviceChanged?120:260);
+            }
+        }
+        if(last instanceof Exception)throw (Exception)last;
+        throw new RuntimeException("screenshot failed after retries",last);
+    }
+    private void tap(float x,float y,long ms)throws Exception{
+        if(!running.get())throw new InterruptedException("stopped");
+        PilotAccessibilityService s=waitForService();
+        if(!s.tap(x,y,ms).get(3,TimeUnit.SECONDS))throw new RuntimeException("tap cancelled");
+    }
     private void tapMapped(Bitmap frame,float x,float y,long ms,String label)throws Exception{
         if(!running.get())throw new InterruptedException("stopped");
-        PilotAccessibilityService.TapResult tr=service.tapFromBitmap(frame,x,y,ms).get(4,TimeUnit.SECONDS);
+        PilotAccessibilityService s=waitForService();
+        PilotAccessibilityService.TapResult tr=s.tapFromBitmap(frame,x,y,ms).get(4,TimeUnit.SECONDS);
         emit(label+" TAP • screenshot=("+Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
                 tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
                 tr.displayWidth+"×"+tr.displayHeight+" • dispatch="+
@@ -703,11 +790,16 @@ public final class PilotController {
 
     private void swipeMapped(Bitmap frame,float x1,float y1,float x2,float y2,long ms,String label)throws Exception{
         if(!running.get())throw new InterruptedException("stopped");
-        if(!service.swipeFromBitmap(frame,x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))
+        PilotAccessibilityService s=waitForService();
+        if(!s.swipeFromBitmap(frame,x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))
             throw new RuntimeException(label+" swipe cancelled");
     }
 
-    private void swipe(float x1,float y1,float x2,float y2,long ms)throws Exception{if(!running.get())throw new InterruptedException("stopped");if(!service.swipe(x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))throw new RuntimeException("swipe cancelled");}
+    private void swipe(float x1,float y1,float x2,float y2,long ms)throws Exception{
+        if(!running.get())throw new InterruptedException("stopped");
+        PilotAccessibilityService s=waitForService();
+        if(!s.swipe(x1,y1,x2,y2,ms).get(4,TimeUnit.SECONDS))throw new RuntimeException("swipe cancelled");
+    }
     private void sleep(long ms)throws InterruptedException{long left=ms;while(left>0&&running.get()){long n=Math.min(100,left);Thread.sleep(n);left-=n;}if(!running.get())throw new InterruptedException("stopped");}
     private void emit(String s){
         long base=runStartUptime;
@@ -727,7 +819,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.5-alpha17 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.7-alpha19 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

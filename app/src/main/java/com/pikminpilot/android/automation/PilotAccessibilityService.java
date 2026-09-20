@@ -7,6 +7,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
 import android.os.SystemClock;
+import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Display;
@@ -49,12 +50,25 @@ public class PilotAccessibilityService extends AccessibilityService {
         PilotController.get().onServiceReady(this);
     }
 
+    @Override public boolean onUnbind(Intent intent) {
+        if(INSTANCE==this) INSTANCE=null;
+        PilotController.get().onServiceDisconnected(this,"onUnbind");
+        return super.onUnbind(intent);
+    }
+
     @Override public void onDestroy() {
-        if(INSTANCE==this) INSTANCE=null; PilotController.get().stop("Accessibility service stopped"); super.onDestroy();
+        if(INSTANCE==this) INSTANCE=null;
+        // Some OEM Android builds temporarily tear down and later rebind an
+        // accessibility service while the app/game stays alive.  Treat that as
+        // a recoverable transport loss, not as a user-requested Pilot stop.
+        PilotController.get().onServiceDisconnected(this,"onDestroy");
+        super.onDestroy();
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
-    @Override public void onInterrupt() {}
+    @Override public void onInterrupt() {
+        PilotController.get().onServiceInterrupted(this);
+    }
 
     public CompletableFuture<Bitmap> screenshot() {
         CompletableFuture<Bitmap> f=new CompletableFuture<>();

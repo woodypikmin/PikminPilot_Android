@@ -28,7 +28,9 @@ import java.util.concurrent.TimeUnit;
  * Android port of the list-classification path in FruitDetector.swift.
  * Safety semantics intentionally mirror the iOS build:
  * - BUSY / COMPLETE bordered cards are not tappable.
- * - fruit requires a known fruit label near the detected object.
+ * - fruit uses exclusion-first OCR: once an AVAILABLE 3-column object is found,
+ *   any non-empty nearby label is fruit unless it is explicitly a seedling/gift.
+ *   This avoids depending on an ever-growing positive fruit dictionary.
  * - seedling requires an OCR label containing 色花苗, or the two proven
  *   exceptions 冰藍花苗 / 大花苗. Plain 花苗 is explicitly rejected.
  */
@@ -171,13 +173,40 @@ public final class CargoDetector {
             // BUSY/COMPLETE/partial card can block this item. A lone horizontal
             // border in the same column is not enough because it can belong to
             // the carried card directly above/below a different valid seedling.
-            Kind kind=isKnownFruitLabel(label)?Kind.FRUIT:(isSeedlingLabel(label)?Kind.SEEDLING:Kind.UNKNOWN);
+            boolean seedlingLabel=isSeedlingLabel(label);
+            boolean excludedNonFruit=isExcludedNonFruitLabel(label);
+            boolean knownFruit=isKnownFruitLabel(label);
+            boolean lemonRepair=isLemonOcrAlias(label);
+            boolean hasText=label!=null&&!normalize(label).isEmpty();
+
+            // Exclusion-first fruit classification.  Expedition cargo in this
+            // 3-column section is overwhelmingly fruit / seedling / gift.  The
+            // old positive fruit dictionary made Android depend on exact OCR
+            // spelling (檸檬→檸樣, 青蘋果→責蘋果, ...).  Preserve seedling
+            // handling, explicitly reject gift/seedling text, and treat every
+            // other non-empty nearby label as fruit.
+            Kind kind;
+            if(seedlingLabel) kind=Kind.SEEDLING;
+            else if(excludedNonFruit || !hasText) kind=Kind.UNKNOWN;
+            else kind=Kind.FRUIT;
+
             Candidate candidate=new Candidate(center,c.rect,kind,label);
-            if(kind==Kind.FRUIT) { fruit.add(candidate); diagnostics.add("ACCEPT[FRUIT] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")"); }
-            else if(kind==Kind.SEEDLING) { seed.add(candidate); diagnostics.add("ACCEPT[SEEDLING] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")"); }
+            if(kind==Kind.FRUIT) {
+                fruit.add(candidate);
+                String source=knownFruit?(lemonRepair?"LEMON_OCR_REPAIR":"KNOWN_TEXT"):"BY_EXCLUSION";
+                diagnostics.add("ACCEPT[FRUIT:"+source+"] "+label+
+                        " @("+Math.round(center.x)+","+Math.round(center.y)+")");
+            }
+            else if(kind==Kind.SEEDLING) {
+                seed.add(candidate);
+                diagnostics.add("ACCEPT[SEEDLING] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")");
+            }
             else {
                 blocked.add(candidate);
-                if(label!=null&&!label.trim().isEmpty()) diagnostics.add("SKIP[UNKNOWN_LABEL] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")");
+                if(hasText) {
+                    String reason=excludedNonFruit?"NON_FRUIT_TEXT":"UNKNOWN_LABEL";
+                    diagnostics.add("SKIP["+reason+"] "+label+" @("+Math.round(center.x)+","+Math.round(center.y)+")");
+                }
             }
         }
 
@@ -369,8 +398,46 @@ public final class CargoDetector {
 
     public static boolean isKnownFruitLabel(String text) {
         if(isSeedlingLabel(text)) return false;
-        for(String s:KNOWN_FRUITS) if(text!=null && text.contains(s)) return true;
+        if(text==null) return false;
+        for(String s:KNOWN_FRUITS) if(text.contains(s)) return true;
+        return isLemonOcrAlias(text);
+    }
+
+    /**
+     * Negative cargo dictionary.  We intentionally do NOT try to enumerate all
+     * fruit names here.  Anything with nearby OCR text is treated as fruit after
+     * these known non-fruit classes are removed.
+     *
+     * A single 禮/礼 or 贈/赠 catches 紅色禮品 / 禮物 / 禮盒 / 稀有贈禮 and
+     * future wording variants.  花苗 is normalized separately so 花苖 / 冰蓝
+     * style Android OCR damage cannot fall through and become fruit.
+     */
+    private static boolean isExcludedNonFruitLabel(String text) {
+        if(text==null) return false;
+        String seed=normalizeSeedlingOcr(text);
+        String n=normalize(text).toLowerCase(java.util.Locale.ROOT);
+        if(seed.contains("花苗")) return true;
+        if(n.contains("禮")||n.contains("礼")||n.contains("贈")||n.contains("赠")||n.contains("稀有")) return true;
+        if(n.contains("gift")||n.contains("present")) return true;
+        // Not expected inside 花苗和水果, but never let navigation/postcard text
+        // become a fruit if OCR boxes overlap at the sheet boundary.
+        if(n.contains("明信片")||n.contains("postcard")) return true;
         return false;
+    }
+
+    /**
+     * ML Kit repeatedly reads 檸檬 as 檸樣 or even 樟樣 on some Android
+     * devices/fonts.  Both variants were observed in real Pilot logs on the
+     * exact fruit slot, e.g. `檸樣:水仙` / `樟樣:水仙`.  Keep this repair very
+     * narrow: it is only consulted after the image detector has already found a
+     * fruit-shaped component and nearbyLabel() has tied this text to that cell.
+     */
+    private static boolean isLemonOcrAlias(String text) {
+        if(text==null) return false;
+        String n=normalize(text)
+                .replace("|","").replace("丨","")
+                .replace("柠","檸").replace("样","樣");
+        return n.contains("檸樣") || n.contains("樟樣") || n.contains("檸様") || n.contains("樟様");
     }
 
     public static boolean hasExpeditionCta(List<OcrItem> items) {
