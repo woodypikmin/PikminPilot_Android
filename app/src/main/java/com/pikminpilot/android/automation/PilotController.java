@@ -12,6 +12,7 @@ import com.pikminpilot.android.detection.Detector;
 import com.pikminpilot.android.model.PilotConfig;
 import com.pikminpilot.android.model.SelectionPolicy;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -99,7 +100,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.1-alpha23 • sticky fallback cursor • unified plan advance • zero-select in-place fallback • fallback 岩/紫/粉/白");
+            emit("BUILD 0.4.3-alpha25 • bottom BUSY header guard • edge 2-frame AVAILABLE ACK • adaptive screenshot throttle • sticky fallback cursor");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -208,7 +209,13 @@ public final class PilotController {
                 }
                 emit("SEEDLING OCR ✅ • "+labels);
             }
-            if(!available.isEmpty()) return new CargoAndBitmap(available.get(0),b);
+            if(!available.isEmpty()) {
+                for(CargoDetector.Candidate candidate:new ArrayList<>(available)){
+                    CargoAndBitmap verified=verifyEdgeCargoIfNeeded(cfg,round,candidate,b,result);
+                    if(verified!=null) return verified;
+                }
+                emit("SCAN-DIAG • all edge-risk candidates failed second-frame AVAILABLE confirmation");
+            }
 
             if(swipes>=12){
                 if(!reversed){
@@ -233,6 +240,55 @@ public final class PilotController {
             sleep(3000);
         }
         return null;
+    }
+
+    /**
+     * AVAILABLE is a positive action, so candidates touching the top/bottom edge
+     * need two stable frames before we tap them. BUSY/COMPLETE remains one-vote
+     * veto. This is intentionally limited to edge-risk items so the normal list
+     * path does not pay a second OCR pass on every cargo.
+     */
+    private CargoAndBitmap verifyEdgeCargoIfNeeded(PilotConfig cfg,int round,CargoDetector.Candidate candidate,
+                                                   Bitmap first,CargoDetector.Result firstResult)throws Exception{
+        float h=first.getHeight(),w=first.getWidth();
+        boolean lower=candidate.center.y>=h*0.78f;
+        boolean upper=candidate.center.y<=firstResult.contentTopY+h*0.12f;
+        if(!lower&&!upper) return new CargoAndBitmap(candidate,first);
+
+        emit("CARGO EDGE VERIFY ⏳ • risk="+(lower?"LOWER":"UPPER")+
+                " • first=("+Math.round(candidate.center.x)+","+Math.round(candidate.center.y)+") • wait=850ms");
+        sleep(850);
+        Bitmap second=shot();
+        CargoDetector.Result again=CargoDetector.scan(second);
+        if(!again.navGuardProven){
+            emit("CARGO EDGE VERIFY REJECTED ⚠️ • NAV-GUARD unproven on second frame");
+            return null;
+        }
+        List<CargoDetector.Candidate> secondAvailable=again.matching(cfg.cargoMode);
+        secondAvailable.removeIf(c->c.center.y<again.contentTopY);
+        secondAvailable.removeIf(c->isExactRecentDispatch(c,second,round));
+        secondAvailable.removeIf(c->isFailedSelectionSkip(c,second,round));
+
+        CargoDetector.Candidate best=null;double bestD=Double.MAX_VALUE;
+        float sx=second.getWidth()/Math.max(1f,first.getWidth());
+        float sy=second.getHeight()/Math.max(1f,first.getHeight());
+        float ex=candidate.center.x*sx,ey=candidate.center.y*sy;
+        for(CargoDetector.Candidate c:secondAvailable){
+            if(c.kind!=candidate.kind) continue;
+            double dx=(c.center.x-ex)/Math.max(1f,second.getWidth());
+            double dy=(c.center.y-ey)/Math.max(1f,second.getHeight());
+            double d=dx*dx+dy*dy;
+            if(Math.abs(dx)>0.09||Math.abs(dy)>0.09) continue;
+            if(d<bestD){bestD=d;best=c;}
+        }
+        if(best==null){
+            emit("CARGO EDGE VERIFY REJECTED ✅ • candidate not AVAILABLE on second frame; no tap");
+            int shown=Math.min(5,again.diagnostics.size());
+            for(int i=0;i<shown;i++) emit("EDGE-DIAG "+again.diagnostics.get(i));
+            return null;
+        }
+        emit("CARGO EDGE VERIFY STABLE ✅ • second=("+Math.round(best.center.x)+","+Math.round(best.center.y)+")");
+        return new CargoAndBitmap(best,second);
     }
 
     /**
@@ -1079,9 +1135,21 @@ public final class PilotController {
     }
 
     private void requireService()throws Exception{waitForService();}
+    private static boolean isScreenshotIntervalShort(Throwable t){
+        Throwable cur=t;
+        while(cur!=null){
+            String m=cur.getMessage();
+            if(m!=null&&m.contains("takeScreenshot error=3"))return true;
+            cur=cur.getCause();
+        }
+        return false;
+    }
+
     private Bitmap shot()throws Exception{
         Throwable last=null;
-        for(int attempt=1;attempt<=3&&running.get();attempt++){
+        int hardAttempt=0;
+        int throttleRetry=0;
+        while(running.get()&&hardAttempt<3){
             PilotAccessibilityService s=waitForService();
             try{
                 Bitmap b=s.screenshot().get(5,TimeUnit.SECONDS);
@@ -1090,9 +1158,18 @@ public final class PilotController {
             }catch(Throwable t){
                 last=t;
                 boolean serviceChanged=(service!=s || PilotAccessibilityService.get()!=s);
-                emit("SCREENSHOT RETRY ⚠️ • attempt="+attempt+"/3 • serviceChanged="+serviceChanged+
+                if(isScreenshotIntervalShort(t)&&throttleRetry<8){
+                    throttleRetry++;
+                    long wait=Math.min(1400L,650L+(throttleRetry-1)*120L);
+                    emit("SCREENSHOT THROTTLE ⏳ • Android error=3 (interval too short) • retry="+
+                            throttleRetry+"/8 • wait="+wait+"ms • stage="+currentStage);
+                    sleep(wait);
+                    continue;
+                }
+                hardAttempt++;
+                emit("SCREENSHOT RETRY ⚠️ • attempt="+hardAttempt+"/3 • serviceChanged="+serviceChanged+
                         " • error="+(t.getMessage()==null?t.getClass().getSimpleName():t.getMessage()));
-                if(attempt<3) sleep(serviceChanged?120:260);
+                if(hardAttempt<3) sleep(serviceChanged?220:500);
             }
         }
         if(last instanceof Exception)throw (Exception)last;

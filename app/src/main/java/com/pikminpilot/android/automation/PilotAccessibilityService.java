@@ -25,6 +25,7 @@ public class PilotAccessibilityService extends AccessibilityService {
     private final Executor screenshotExecutor = Executors.newSingleThreadExecutor();
     private final Object screenshotRateLock = new Object();
     private long lastScreenshotRequestUptime = 0L;
+    private long screenshotMinGapMs = 650L;
 
     /** Result from a screenshot-coordinate tap after mapping it into display coordinates. */
     public static final class TapResult {
@@ -138,7 +139,7 @@ public class PilotAccessibilityService extends AccessibilityService {
         // AccessibilityService rejects screenshots requested too close together.
         synchronized (screenshotRateLock) {
             long now = SystemClock.uptimeMillis();
-            long wait = 400L - (now - lastScreenshotRequestUptime);
+            long wait = screenshotMinGapMs - (now - lastScreenshotRequestUptime);
             if (wait > 0) {
                 try { Thread.sleep(wait); } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -158,6 +159,9 @@ public class PilotAccessibilityService extends AccessibilityService {
                     Bitmap software = hardware.copy(Bitmap.Config.ARGB_8888, false);
                     hardware.recycle();
                     if (software == null) throw new IllegalStateException("hardware bitmap copy failed");
+                    synchronized (screenshotRateLock) {
+                        if (screenshotMinGapMs > 650L) screenshotMinGapMs = Math.max(650L, screenshotMinGapMs - 50L);
+                    }
                     f.complete(software);
                 } catch(Throwable t) {
                     f.completeExceptionally(t);
@@ -166,6 +170,11 @@ public class PilotAccessibilityService extends AccessibilityService {
                 }
             }
             @Override public void onFailure(int errorCode) {
+                if (errorCode == AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
+                    synchronized (screenshotRateLock) {
+                        screenshotMinGapMs = Math.min(1400L, Math.max(750L, screenshotMinGapMs + 150L));
+                    }
+                }
                 f.completeExceptionally(new RuntimeException("takeScreenshot error="+errorCode));
             }
         });

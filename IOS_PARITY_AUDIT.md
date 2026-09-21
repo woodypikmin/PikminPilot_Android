@@ -1,3 +1,11 @@
+## 0.4.3-alpha25 Android lower-edge BUSY note
+
+The iOS card-first RGB/geometry detector remains the base. Android additionally treats a same-column remaining-return-time header above a lower-edge candidate as BUSY evidence, and requires a second-frame AVAILABLE confirmation before tapping edge-risk cargo. This is intentionally Android-only hardening for overlays, screenshot colour shifts, and transition frames; it does not change seedling classification or the selection fallback state machine.
+
+## 0.4.2-alpha24 Android-only stability note
+
+This release does not change iOS selection semantics. It only makes Android Accessibility screenshots tolerant of vendor rate limiting (`takeScreenshot error=3`) and retains a longer diagnostic log buffer.
+
 # Android 0.4.1-alpha23 reliability note
 
 This release is a minimal delta from alpha22. It does not change cargo scanning, GO detection, Green-X, expedition navigation, or the fallback reset rules.

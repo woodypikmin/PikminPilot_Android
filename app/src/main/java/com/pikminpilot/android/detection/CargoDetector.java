@@ -106,6 +106,17 @@ public final class CargoDetector {
             "葡萄","青葡萄","草莓","櫻桃","樱桃","藍莓","蓝莓","萊姆","莱姆","酸橙","柚子"
     );
 
+    // A BUSY expedition card shows a remaining-return-time header above the
+    // carried cargo (for example "158日18小時"). This is useful cross-device
+    // evidence when the very pale pink/green border is shifted by display
+    // colour management or partly hidden by floating/system overlays.
+    // We intentionally require 日 + 小時/小时 and also constrain it spatially
+    // to the same column ABOVE a lower-edge candidate; normal AVAILABLE rows
+    // that merely show a travel duration below the item do not satisfy this.
+    private static final Pattern BUSY_RETURN_TIME_PATTERN = Pattern.compile(
+            ".*\\d{1,4}[日曰]\\d{1,3}(?:小時|小时|時|时).*"
+    );
+
     // Reuse one ML Kit recognizer for the lifetime of the process. Creating and
     // closing a recognizer on every screenshot caused multi-second stalls on
     // some phones and made round-to-round timing wildly inconsistent. The Pilot
@@ -194,8 +205,11 @@ public final class CargoDetector {
             // the rail evidence continues downward toward the candidate.  This
             // directional test avoids the old bug where a BUSY card in the row
             // above blocked a different AVAILABLE item below it.
-            if(hasBottomClippedStatusEvidence(b,tolerantStatusBands,col,center,navGuard.contentTopY)) {
-                diagnostics.add("SKIP[STATUS_CLIPPED_LOWER] object @("+Math.round(center.x)+","+Math.round(center.y)+") col="+col);
+            boolean lowerBorderEvidence=hasBottomClippedStatusEvidence(b,tolerantStatusBands,col,center,navGuard.contentTopY);
+            boolean busyTimeHeader=hasBusyReturnTimeHeaderAboveCandidate(ocr,col,center,w,h,navGuard.contentTopY);
+            if(lowerBorderEvidence || busyTimeHeader) {
+                diagnostics.add((busyTimeHeader?"SKIP[BUSY_TIME_HEADER]":"SKIP[STATUS_CLIPPED_LOWER]")+
+                        " object @("+Math.round(center.x)+","+Math.round(center.y)+") col="+col);
                 continue;
             }
             double expected=(col+0.5)*colWidth;
@@ -665,6 +679,36 @@ public final class CargoDetector {
         return false;
     }
 
+    /**
+     * BUSY-card semantic guard for lower-edge candidates. The remaining-time
+     * header sits ABOVE the carried fruit inside the bordered status card, while
+     * normal AVAILABLE travel-time text is rendered below the cargo/location.
+     * This lets us block a carried fruit even when an overlay hides the bottom
+     * rail or a phone shifts the pastel border outside the RGB tolerance.
+     */
+    private static boolean hasBusyReturnTimeHeaderAboveCandidate(List<OcrItem> ocr,int col,PointF center,int w,int h,float contentTopY){
+        if(center.y<Math.max(contentTopY+h*0.20f,h*0.72f)) return false;
+        float cw=w/3f;
+        float x0=col*cw, x1=(col+1)*cw;
+        float minY=Math.max(contentTopY,center.y-h*0.205f);
+        float maxY=center.y-h*0.035f;
+        for(OcrItem item:ocr){
+            float cx=item.rect.centerX(), cy=item.rect.centerY();
+            if(cx<x0||cx>x1||cy<minY||cy>maxY) continue;
+            String n=normalize(item.text)
+                    .replace("小时","小時")
+                    .replace("时","時")
+                    .replace("曰","日");
+            if(n.length()>24) continue;
+            boolean explicit=BUSY_RETURN_TIME_PATTERN.matcher(n).matches();
+            // ML Kit occasionally loses one or more digits but preserves both
+            // semantic units. Keep this fallback spatially constrained.
+            boolean unitPair=n.contains("日")&&n.contains("小時");
+            if(explicit||unitPair) return true;
+        }
+        return false;
+    }
+
     private static RectF labelRectNearObject(RectF object,int w,int h,List<OcrItem> ocr){
         double colWidth=w/3.0;
         int col=Math.min(2,Math.max(0,(int)(object.centerX()/colWidth)));
@@ -810,6 +854,23 @@ public final class CargoDetector {
             boolean descendsTowardCandidate=downStrong>=downNeed && nearStrong>=Math.max(2,(int)(h*0.0025f));
             boolean directional=downStrong>=upStrong+Math.max(3,(int)(h*0.004f)) || by>=h*0.82f;
             if(descendsTowardCandidate&&directional) return true;
+
+            // Some phones place the bottom sheet/system controls over the side
+            // rail, so requiring rail pixels all the way to the physical screen
+            // edge can fail even though the BUSY top border itself is strong.
+            // Accept a strong unpaired status band only when this exact candidate
+            // lies inside the expected card interior near the lower viewport.
+            int bandThickness=Math.max(1,band.y1-band.y0+1);
+            boolean strongBand=bandThickness>=2;
+            boolean lowerViewport=center.y>=Math.max(contentTopY+h*0.22f,h*0.78f);
+            boolean interiorDelta=delta>=h*0.035f&&delta<=h*0.170f;
+            boolean looksLikePreviousCardBottom=false;
+            for(Band prev:bands){
+                if(prev==band||prev.col!=col||prev.state!=band.state) continue;
+                float d=(float)(band.center()-prev.center());
+                if(d>=h*0.095f&&d<=h*0.185f){ looksLikePreviousCardBottom=true; break; }
+            }
+            if(strongBand&&lowerViewport&&interiorDelta&&!looksLikePreviousCardBottom) return true;
         }
         return false;
     }

@@ -78,9 +78,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.1-alpha23 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.3-alpha25 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.4.1-alpha23 • sticky fallback cursor • unified plan advance • fallback 岩/紫/粉/白 • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.4.3-alpha25 • bottom BUSY header guard • edge 2-frame AVAILABLE ACK • sticky fallback cursor • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -214,7 +214,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         Toast.makeText(this,"Log 已複製（"+text.length()+" 字元）",Toast.LENGTH_SHORT).show();
     }
 
-    private void appendLog(String s){if(log.length()>30000)log.delete(0,10000);log.append(s).append('\n');logView.setText(log.toString());}
+    private void appendLog(String s){if(log.length()>250000)log.delete(0,50000);log.append(s).append('\n');logView.setText(log.toString());}
     @Override public void onStatus(String status){runStatus.setText(status);}
     @Override public void onLog(String line){appendLog(line);}
 }

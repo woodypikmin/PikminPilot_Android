@@ -1,3 +1,31 @@
+# 0.4.3-alpha25 — bottom-clipped BUSY hardening
+
+This build is based directly on 0.4.2-alpha24. Selection fallback, GO, Green-X, 24% list swipe, 3s settle, exclusion-first fruit OCR, and sticky plan cursor are unchanged.
+
+## Fix: carried fruit at the bottom edge
+
+Some phones still tapped a fruit that was already being carried when its BUSY card was clipped by the bottom of the screenshot. The old lower-edge guard depended too much on the pale side rails remaining visible all the way toward the physical screen bottom. Floating controls / system navigation / colour management can hide or shift those rails.
+
+alpha25 adds two independent protections:
+
+1. **BUSY return-time header guard** — a same-column header such as `158日18小時` above a lower-edge candidate is treated as BUSY-card evidence even if the pastel frame is partially obscured. Normal available travel-time text is below the object, so it does not satisfy this geometry.
+2. **Two-frame AVAILABLE confirmation for edge candidates** — cargo in the upper/lower risk zones must remain AVAILABLE on a second fresh screenshot 850 ms later before it may be tapped. BUSY/COMPLETE evidence on either frame vetoes the tap. Normal middle-of-list cargo keeps the single-pass path.
+
+New diagnostics include:
+
+```text
+SKIP[BUSY_TIME_HEADER] object @(...) col=...
+SKIP[STATUS_CLIPPED_LOWER] object @(...) col=...
+CARGO EDGE VERIFY ⏳ ...
+CARGO EDGE VERIFY REJECTED ✅ ...
+CARGO EDGE VERIFY STABLE ✅ ...
+```
+
+- Fixes repeated Android Accessibility `takeScreenshot error=3` by using an adaptive screenshot interval and a dedicated transient throttle retry path.
+- Error 3 no longer consumes the normal 3 hard screenshot retries, so Green-X ACK and other stages do not abort just because the phone rate-limits screenshots.
+- Copy Log buffer increased to ~250k characters so a longer run is less likely to lose the beginning of the session.
+- Selection fallback / sticky plan / cargo / GO behavior is otherwise unchanged from 0.4.1-alpha23.
+
 # PikminPilot Android 0.4.1-alpha23
 
 Android port of the user's PikminPilot iOS gameplay loop.
