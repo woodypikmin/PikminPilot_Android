@@ -46,6 +46,9 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Run selection truth-table unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
