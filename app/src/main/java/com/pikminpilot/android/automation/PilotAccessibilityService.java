@@ -14,6 +14,7 @@ import android.view.Display;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -69,6 +70,67 @@ public class PilotAccessibilityService extends AccessibilityService {
     @Override public void onInterrupt() {
         PilotController.get().onServiceInterrupted(this);
     }
+
+
+    public static final class SelectionCountResult {
+        public final int selected, maximum;
+        public final String source;
+        SelectionCountResult(int selected,int maximum,String source){this.selected=selected;this.maximum=maximum;this.source=source;}
+    }
+
+    /** Best-effort UI-tree read. Pikmin Bloom may expose little/no accessibility text. */
+    public SelectionCountResult readSelectionCountFromTree() {
+        AccessibilityNodeInfo root=getRootInActiveWindow();
+        if(root==null) return null;
+        try {
+            java.util.ArrayDeque<AccessibilityNodeInfo> q=new java.util.ArrayDeque<>();
+            q.add(root);
+            java.util.regex.Pattern ratio=java.util.regex.Pattern.compile("(\\d{1,2})\\s*/\\s*(\\d{1,2})");
+            SelectionCountResult fallback=null;
+            while(!q.isEmpty()){
+                AccessibilityNodeInfo n=q.removeFirst();
+                CharSequence cs=n.getText();
+                if(cs==null||cs.length()==0) cs=n.getContentDescription();
+                if(cs!=null){
+                    String t=cs.toString();
+                    java.util.regex.Matcher m=ratio.matcher(t);
+                    while(m.find()){
+                        int a,b;
+                        try{a=Integer.parseInt(m.group(1));b=Integer.parseInt(m.group(2));}catch(Exception e){continue;}
+                        if(a<0||b<1||b>40||a>b)continue;
+                        boolean strong=t.contains("最多")||t.contains("皮克敏")||t.toLowerCase().contains("pikmin");
+                        SelectionCountResult r=new SelectionCountResult(a,b,strong?"UI-TREE-HEADER":"UI-TREE-RATIO");
+                        if(strong)return r;
+                        fallback=r;
+                    }
+                }
+                for(int i=0;i<n.getChildCount();i++){
+                    AccessibilityNodeInfo c=n.getChild(i);
+                    if(c!=null)q.add(c);
+                }
+                if(n!=root)n.recycle();
+            }
+            return fallback;
+        } finally { root.recycle(); }
+    }
+
+    public String findTextInTree(String... needles){
+        AccessibilityNodeInfo root=getRootInActiveWindow();
+        if(root==null)return null;
+        try{
+            java.util.ArrayDeque<AccessibilityNodeInfo> q=new java.util.ArrayDeque<>();q.add(root);
+            while(!q.isEmpty()){
+                AccessibilityNodeInfo n=q.removeFirst();
+                CharSequence cs=n.getText(); if(cs==null||cs.length()==0)cs=n.getContentDescription();
+                if(cs!=null){String t=cs.toString();for(String needle:needles)if(needle!=null&&t.contains(needle))return t;}
+                for(int i=0;i<n.getChildCount();i++){AccessibilityNodeInfo c=n.getChild(i);if(c!=null)q.add(c);}
+                if(n!=root)n.recycle();
+            }
+            return null;
+        } finally {root.recycle();}
+    }
+
+    public boolean globalBack(){return performGlobalAction(GLOBAL_ACTION_BACK);}
 
     public CompletableFuture<Bitmap> screenshot() {
         CompletableFuture<Bitmap> f=new CompletableFuture<>();

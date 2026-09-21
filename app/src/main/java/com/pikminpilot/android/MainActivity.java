@@ -11,6 +11,7 @@ import android.provider.Settings;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -23,6 +24,8 @@ public class MainActivity extends Activity implements PilotController.Listener {
     private TextView serviceStatus,runStatus,logView,speedBadge,cargoHint,speedHint,countTitle,countHint,pikminCountView;
     private TextView summaryRun,summaryCargo,summaryPikmin;
     private Spinner runMode;
+    private Spinner fallback1Type,fallback2Type,fallback3Type,fallback1Count,fallback2Count,fallback3Count;
+    private CheckBox fallback1Enabled,fallback2Enabled,fallback3Enabled;
     private Button cargoFruit,cargoSeedling,cargoBoth,typePink,typeWhite,typePurple,typeRock,speedStable,speedFast;
     private final StringBuilder log=new StringBuilder();
     private PilotConfig.CargoMode cargoMode=PilotConfig.CargoMode.FRUIT;
@@ -38,6 +41,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         countTitle=findViewById(R.id.countTitle); countHint=findViewById(R.id.countHint); pikminCountView=findViewById(R.id.pikminCount);
         summaryRun=findViewById(R.id.summaryRun);summaryCargo=findViewById(R.id.summaryCargo);summaryPikmin=findViewById(R.id.summaryPikmin);
         runMode=findViewById(R.id.runMode);
+        fallback1Enabled=findViewById(R.id.fallback1Enabled); fallback2Enabled=findViewById(R.id.fallback2Enabled); fallback3Enabled=findViewById(R.id.fallback3Enabled);
+        fallback1Type=findViewById(R.id.fallback1Type); fallback2Type=findViewById(R.id.fallback2Type); fallback3Type=findViewById(R.id.fallback3Type);
+        fallback1Count=findViewById(R.id.fallback1Count); fallback2Count=findViewById(R.id.fallback2Count); fallback3Count=findViewById(R.id.fallback3Count);
         cargoFruit=findViewById(R.id.cargoFruit);cargoSeedling=findViewById(R.id.cargoSeedling);cargoBoth=findViewById(R.id.cargoBoth);
         typePink=findViewById(R.id.typePink);typeWhite=findViewById(R.id.typeWhite);typePurple=findViewById(R.id.typePurple);typeRock=findViewById(R.id.typeRock);
         speedStable=findViewById(R.id.speedStable);speedFast=findViewById(R.id.speedFast);
@@ -54,6 +60,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         try{pikminType=PilotConfig.PikminType.valueOf(prefs.getString("type","PINK"));}catch(Exception ignored){}
         fast=prefs.getBoolean("fast",false); pikminCount=prefs.getInt("count",12);
         enforceMinimum();
+        setupFallbackUi();
 
         cargoFruit.setOnClickListener(v->selectCargo(PilotConfig.CargoMode.FRUIT));
         cargoSeedling.setOnClickListener(v->selectCargo(PilotConfig.CargoMode.SEEDLING));
@@ -71,9 +78,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.7-alpha19 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.8-alpha20 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.3.7-alpha19 • exclusion-first fruit OCR • iOS bottom-right GO • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.3.8-alpha20 • selection fallback • strict orange-red GO • top-clipped BUSY guard • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -92,7 +99,15 @@ public class MainActivity extends Activity implements PilotController.Listener {
     private void selectType(PilotConfig.PikminType x){pikminType=x;enforceMinimum();save();refreshUi();}
     private void selectSpeed(boolean x){fast=x;save();refreshUi();}
     private void enforceMinimum(){pikminCount=Math.max(PilotConfig.minimumCount(pikminType),Math.min(12,pikminCount));}
-    private void save(){prefs.edit().putString("cargo",cargoMode.name()).putString("type",pikminType.name()).putBoolean("fast",fast).putInt("count",pikminCount).apply();}
+    private void save(){
+        SharedPreferences.Editor e=prefs.edit().putString("cargo",cargoMode.name()).putString("type",pikminType.name()).putBoolean("fast",fast).putInt("count",pikminCount);
+        if(fallback1Enabled!=null){
+            saveFallback(e,1,fallback1Enabled,fallback1Type,fallback1Count);
+            saveFallback(e,2,fallback2Enabled,fallback2Type,fallback2Count);
+            saveFallback(e,3,fallback3Enabled,fallback3Type,fallback3Count);
+        }
+        e.apply();
+    }
 
     private void selected(Button b,boolean on){b.setBackgroundResource(on?R.drawable.button_selected:R.drawable.button_unselected);}
     private void refreshUi(){
@@ -102,12 +117,14 @@ public class MainActivity extends Activity implements PilotController.Listener {
         String cargoText;
         if(cargoMode==PilotConfig.CargoMode.SEEDLING) cargoText="花苗只接受「某色花苗」文字（必須含「色花苗」）；上方單獨的「花苗」分頁永遠不點。";
         else if(cargoMode==PilotConfig.CargoMode.BOTH) cargoText="水果＋花苗模式只接受 OCR 含「色花苗」的盆栽；上方單獨「花苗」分頁永遠排除。";
-        else cargoText="沿用 iOS FruitDetector 的水果 card-first AVAILABLE 判定。";
+        else cargoText="水果採排除式 OCR；禮物/花苗排除。已搬運卡片仍以 card-first BUSY/COMPLETE 判定。";
         cargoHint.setText(cargoText);
         speedHint.setText(fast?"快速模式只縮短已驗證的等待與選取間隔；辨識重試與安全判定仍保留。":"穩定模式沿用目前已驗證的等待與辨識節奏。");
         int min=PilotConfig.minimumCount(pikminType);
         countTitle.setText("每輪 "+PilotConfig.pikminName(pikminType)+"皮克敏");countHint.setText("最低 "+min+" 隻；每次 Run 固定同一數量");pikminCountView.setText(pikminCount+" 隻");
-        summaryRun.setText(runLabel());summaryCargo.setText(PilotConfig.cargoName(cargoMode));summaryPikmin.setText(PilotConfig.pikminName(pikminType)+"皮×"+pikminCount);
+        summaryRun.setText(runLabel());summaryCargo.setText(PilotConfig.cargoName(cargoMode));
+        int enabledFallbacks=(fallback1Enabled!=null&&fallback1Enabled.isChecked()?1:0)+(fallback2Enabled!=null&&fallback2Enabled.isChecked()?1:0)+(fallback3Enabled!=null&&fallback3Enabled.isChecked()?1:0);
+        summaryPikmin.setText(PilotConfig.pikminName(pikminType)+"皮×"+pikminCount+(enabledFallbacks>0?" + F"+enabledFallbacks:""));
     }
 
     private String runLabel(){int p=runMode==null?1:runMode.getSelectedItemPosition();return p==4?"無限循環":new String[]{"1 顆","5 顆","10 顆","20 顆","無限循環"}[p];}
@@ -116,14 +133,61 @@ public class MainActivity extends Activity implements PilotController.Listener {
     private void openPikmin(){Intent i=getPackageManager().getLaunchIntentForPackage("com.nianticlabs.pikmin");if(i==null){Toast.makeText(this,"找不到 Pikmin Bloom (com.nianticlabs.pikmin)",Toast.LENGTH_LONG).show();return;}startActivity(i);}
     private void startPilot(){
         if(PilotAccessibilityService.get()==null){Toast.makeText(this,"請先啟用 Pikmin Pilot Automation 輔助使用服務",Toast.LENGTH_LONG).show();startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));return;}
-        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,runTarget(),fast);
-        appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount);
+        java.util.List<PilotConfig.SelectionPlan> fallbacks=new java.util.ArrayList<>();
+        fallbacks.add(readFallback(1,fallback1Enabled,fallback1Type,fallback1Count));
+        fallbacks.add(readFallback(2,fallback2Enabled,fallback2Type,fallback2Count));
+        fallbacks.add(readFallback(3,fallback3Enabled,fallback3Type,fallback3Count));
+        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,runTarget(),fast,fallbacks);
+        appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount+" • fallbacks="+enabledFallbackSummary(cfg));
         openPikmin();
         // User workflow: leave Pikmin Bloom already open on the Expedition list,
         // switch back to Pilot, then press START.  Do not inspect the screen during
         // the Android app-switch animation: give Pikmin Bloom a full 3 seconds to
         // return from background to foreground before the first screenshot.
         new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),3000);
+    }
+
+    private static final PilotConfig.PikminType[] FALLBACK_TYPES={
+            PilotConfig.PikminType.PINK,PilotConfig.PikminType.WHITE,PilotConfig.PikminType.PURPLE,PilotConfig.PikminType.ROCK,
+            PilotConfig.PikminType.RED,PilotConfig.PikminType.YELLOW,PilotConfig.PikminType.BLUE};
+
+    private void setupFallbackUi(){
+        String[] typeNames={"粉紅皮","白皮","紫皮","岩皮","紅皮","黃皮","藍皮"};
+        String[] counts=new String[12]; for(int i=0;i<12;i++)counts[i]=(i+1)+" 隻";
+        Spinner[] ts={fallback1Type,fallback2Type,fallback3Type}; Spinner[] cs={fallback1Count,fallback2Count,fallback3Count}; CheckBox[] es={fallback1Enabled,fallback2Enabled,fallback3Enabled};
+        for(int i=0;i<3;i++){
+            ts[i].setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,typeNames));
+            cs[i].setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,counts));
+            int defaultType=i==0?3:(i==1?4:5); // rock, red, yellow
+            ts[i].setSelection(Math.max(0,Math.min(FALLBACK_TYPES.length-1,prefs.getInt("fb"+(i+1)+"Type",defaultType))));
+            cs[i].setSelection(Math.max(0,Math.min(11,prefs.getInt("fb"+(i+1)+"Count",1))));
+            es[i].setChecked(prefs.getBoolean("fb"+(i+1)+"Enabled",false));
+            final int idx=i;
+            android.widget.AdapterView.OnItemSelectedListener l=new android.widget.AdapterView.OnItemSelectedListener(){
+                public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){save();refreshUi();}
+                public void onNothingSelected(android.widget.AdapterView<?> p){}
+            };
+            ts[i].setOnItemSelectedListener(l); cs[i].setOnItemSelectedListener(l);
+            es[i].setOnCheckedChangeListener((buttonView,isChecked)->{save();refreshUi();});
+        }
+    }
+
+    private void saveFallback(SharedPreferences.Editor e,int n,CheckBox enabled,Spinner type,Spinner count){
+        e.putBoolean("fb"+n+"Enabled",enabled.isChecked())
+                .putInt("fb"+n+"Type",type.getSelectedItemPosition())
+                .putInt("fb"+n+"Count",count.getSelectedItemPosition());
+    }
+
+    private PilotConfig.SelectionPlan readFallback(int n,CheckBox enabled,Spinner type,Spinner count){
+        int ti=Math.max(0,Math.min(FALLBACK_TYPES.length-1,type.getSelectedItemPosition()));
+        int configured=Math.max(1,Math.min(12,count.getSelectedItemPosition()+1));
+        return new PilotConfig.SelectionPlan("FALLBACK-"+n,FALLBACK_TYPES[ti],configured,enabled.isChecked());
+    }
+
+    private String enabledFallbackSummary(PilotConfig cfg){
+        StringBuilder b=new StringBuilder();
+        for(PilotConfig.SelectionPlan p:cfg.selectionPlans){if(!p.name.equals("PRIMARY")&&p.enabled){if(b.length()>0)b.append(",");b.append(p.name).append(':').append(PilotConfig.pikminName(p.type)).append('×').append(p.configuredCount);}}
+        return b.length()==0?"none":b.toString();
     }
 
     private void copyLog(){

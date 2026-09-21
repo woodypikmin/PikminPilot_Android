@@ -10,8 +10,8 @@ android {
         applicationId 'com.pikminpilot.android'
         minSdk 30
         targetSdk 36
-        versionCode 18
-        versionName '0.3.7-alpha19'
+        versionCode 19
+        versionName '0.3.8-alpha20'
     }
 
     buildTypes {
@@ -30,4 +30,5 @@ android {
 dependencies {
     // Android counterpart of the iOS Vision OCR used by FruitDetector.swift.
     implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+    testImplementation 'junit:junit:4.13.2'
 }

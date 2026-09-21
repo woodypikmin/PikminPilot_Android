@@ -46,6 +46,16 @@ public final class CargoDetector {
         public OcrItem(String text, RectF rect) { this.text=text; this.rect=rect; }
     }
 
+    public static final class SelectionObserved {
+        public final int selected;
+        public final int maximum;
+        public final String source;
+        public SelectionObserved(int selected,int maximum,String source){
+            this.selected=selected;this.maximum=maximum;this.source=source;
+        }
+        @Override public String toString(){return selected+"/"+maximum+" ("+source+")";}
+    }
+
     public static final class Candidate {
         public final PointF center;
         public final RectF rect;
@@ -128,6 +138,13 @@ public final class CargoDetector {
         // paired/partial card shape. This is safer than simply lowering every
         // pixel threshold and avoids both duplicate dispatches and broad false blocks.
         mergeStatusCards(cards,detectStatusCardsTolerant(b));
+        // A carried item can be clipped by the top navigation sheet. In that case
+        // the top border is off-screen, so a full paired-card detector cannot fire.
+        // Recover ONLY top-clipped cards by requiring a tolerant bottom border plus
+        // real vertical side rails from the dynamic contentTopY down to that border.
+        // The recovered rectangle stops at the border, so nearby AVAILABLE rows
+        // below it are never blocked merely for sharing the same column.
+        mergeStatusCards(cards,detectTopClippedStatusCardsTolerant(b,navGuard.contentTopY));
         List<String> diagnostics=new ArrayList<>();
         diagnostics.add((navGuard.proven?"NAV-GUARD[OK] ":"NAV-GUARD[MISS] ")+
                 "source="+navGuard.source+" contentTopY="+Math.round(navGuard.contentTopY)+
@@ -519,30 +536,55 @@ public final class CargoDetector {
      * deliberately independent from the grid detector: a gesture being
      * dispatched does not prove the game accepted the tap.
      */
-    public static Integer selectedPikminCount(List<OcrItem> items) {
-        if(items==null||items.isEmpty()) return null;
-        Pattern fraction=Pattern.compile("(?:\\(|（)?\\s*(\\d{1,2})\\s*[/／]\\s*(\\d{1,2})\\s*(?:\\)|）)?");
-        Integer fallback=null;
-        float maxY=maxBottom(items);
+    public static SelectionObserved selectionObserved(List<OcrItem> items) {
+        Pattern p=Pattern.compile("(\\d{1,2})\\s*/\\s*(\\d{1,2})");
+        SelectionObserved fallback=null;
+        float maxY=Math.max(1f,maxBottom(items));
         for(OcrItem i:items) {
-            if(i==null||i.text==null) continue;
-            String raw=i.text.replace('Ｏ','0').replace('O','0').replace('ｏ','0');
-            Matcher m=fraction.matcher(raw);
+            String raw=i.text==null?"":i.text;
+            Matcher m=p.matcher(raw);
             while(m.find()) {
                 int selected,max;
-                try { selected=Integer.parseInt(m.group(1)); max=Integer.parseInt(m.group(2)); } catch(Exception ignored) { continue; }
-                if(selected<0||max<2||max>40||selected>max) continue;
-                String t=normalize(raw).toLowerCase();
-                boolean strong=t.contains("皮克敏")||t.contains("最多")||t.contains("選擇")||t.contains("选择")||t.contains("select");
-                if(strong) return selected;
-                // ML Kit sometimes splits the counter away from the sentence.
-                // Accept a plausible fraction only from the upper half of the
-                // selection sheet, where the live counter is rendered.
-                if(i.rect.centerY()<=maxY*0.55f) fallback=selected;
+                try { selected=Integer.parseInt(m.group(1)); max=Integer.parseInt(m.group(2)); }
+                catch(Exception ignored) { continue; }
+                if(selected<0||max<1||max>40||selected>max) continue;
+                String n=normalize(raw);
+                boolean strong=n.contains("可以選擇最多")||n.contains("可以选择最多")||
+                        n.contains("最多")||n.contains("皮克敏");
+                SelectionObserved v=new SelectionObserved(selected,max,strong?"OCR-HEADER":"OCR-RATIO");
+                if(strong) return v;
+                if(i.rect.centerY()<=maxY*0.62f) fallback=v;
             }
         }
         return fallback;
     }
+
+    public static Integer selectedPikminCount(List<OcrItem> items) {
+        SelectionObserved v=selectionObserved(items);
+        return v==null?null:v.selected;
+    }
+
+    public static PointF cancelPoint(List<OcrItem> items) {
+        float maxY=Math.max(1f,maxBottom(items));
+        for(OcrItem i:items){
+            String t=normalize(i.text).toLowerCase();
+            if(!(t.equals("取消")||t.equals("cancel"))) continue;
+            if(i.rect.centerY()<maxY*0.58f) continue;
+            if(i.rect.centerX()>maxRight(items)*0.48f) continue;
+            return new PointF(i.rect.centerX(),i.rect.centerY());
+        }
+        return null;
+    }
+
+    public static boolean hasBusyToast(List<OcrItem> items){
+        for(OcrItem i:items){
+            String t=normalize(i.text);
+            if(t.contains("似乎很忙")||t.contains("很忙")||t.toLowerCase().contains("busy")) return true;
+        }
+        return false;
+    }
+
+    private static float maxRight(List<OcrItem> items){float m=1;for(OcrItem i:items)m=Math.max(m,i.rect.right);return m;}
 
     /** OCR fallback for locating the horizontal Pikmin colour-filter strip. */
     public static PointF filterRowHintPoint(List<OcrItem> items) {
@@ -636,6 +678,51 @@ public final class CargoDetector {
             if(!duplicate)base.add(c);
         }
         base.sort(Comparator.comparingDouble(c->c.rect.top));
+    }
+
+    private static List<StatusCard> detectTopClippedStatusCardsTolerant(Bitmap b,float contentTopY){
+        int w=b.getWidth(),h=b.getHeight();
+        List<Band> bands=horizontalBandsTolerant(b);
+        List<StatusCard> out=new ArrayList<>();
+        float maxBottom=contentTopY+h*0.22f;
+        for(Band band:bands){
+            if(band.center()<contentTopY+h*0.025f||band.center()>maxBottom) continue;
+            int y1=(int)band.center();
+            int y0=Math.max((int)contentTopY,y1-(int)(h*0.18f));
+            int sideRows=verticalRowsTolerant(b,band.state,band.col,y0,y1-2);
+            int need=Math.max(10,(int)(h*0.022f));
+            int bandThickness=Math.max(1,band.y1-band.y0+1);
+            // A strong horizontal status border near the clipped top edge is
+            // sufficient by itself because the recovered block ends AT that
+            // border; it cannot suppress the available row underneath. Side
+            // rails remain stronger evidence when visible, but overlays/notches
+            // can hide one rail on real phones.
+            if(sideRows>=need || bandThickness>=2){
+                out.add(new StatusCard(CardState.BLOCKED,cardRect(band.col,contentTopY,band.y1,w)));
+            }
+        }
+        return out;
+    }
+
+    private static int verticalRowsTolerant(Bitmap b,CardState state,int col,int y0,int y1){
+        if(y1<=y0)return 0;
+        int w=b.getWidth(),h=b.getHeight();double cw=w/3.0;
+        double left=col*cw+w*0.030,right=(col+1)*cw-w*0.030;
+        int strip=Math.max(3,(int)(w*0.010));
+        int lx0=Math.max(0,(int)left-strip),lx1=Math.min(w-1,(int)left+strip);
+        int rx0=Math.max(0,(int)right-strip),rx1=Math.min(w-1,(int)right+strip);
+        int yy0=Math.max(0,y0),yy1=Math.min(h-1,y1),rows=0;
+        for(int y=yy0;y<=yy1;y++){
+            int leftHits=0,rightHits=0;
+            for(int x=lx0;x<=lx1;x++) if(tolerantBorder(state,b.getPixel(x,y))) leftHits++;
+            for(int x=rx0;x<=rx1;x++) if(tolerantBorder(state,b.getPixel(x,y))) rightHits++;
+            if(leftHits>=1&&rightHits>=1) rows++;
+        }
+        return rows;
+    }
+
+    private static boolean tolerantBorder(CardState state,int p){
+        return state==CardState.BUSY?isBusyTolerant(p):isCompleteTolerant(p);
     }
 
     /**

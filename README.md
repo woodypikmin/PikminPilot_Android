@@ -1,52 +1,39 @@
-# PikminPilot Android 0.3.7-alpha19
+# PikminPilot Android 0.3.8-alpha20
 
-## alpha19 focused fixes
-- **GO is bottom-right only.** `detectActiveGo()` is restored to the iOS-proven ROI (`x >= 0.60W`, `y >= 0.76H`) plus a lower-right centre guard, so the centre-bottom drone/expedition icon cannot be selected as GO.
-- **Fruit OCR is exclusion-first.** After an AVAILABLE 3-column visual object is found, any non-empty nearby OCR is treated as fruit unless it contains seedling/gift text. This removes dependence on exact fruit spelling such as `檸檬`, `青蘋果`, etc.
-- Explicit non-fruit exclusions include `花苗`, `禮/礼`, `贈/赠`, `稀有`, `gift/present`, and postcard text. Seedling handling itself is unchanged.
-- Existing 24% list swipe, 3000 ms settle, NAV-GUARD, filter lattice, anchored Green-X, and accessibility auto-resume are retained.
+Android port of the user's PikminPilot iOS gameplay loop.
 
+## alpha20 changes
 
-Reliability hotfix based directly on alpha17.
+- Keeps the existing Expedition scan, CTA, filter lattice, grid selection, Green-X close, list swipe and 3-second list settle flow.
+- Adds **Selection Plan fallback state machine**: Primary + up to 3 enabled fallbacks.
+- Every fallback has its own Pikmin type and configured count.
+- Live `selected / maximum` is the selection source of truth. Accessibility/UI-tree is attempted first; screenshot + ML Kit OCR is the fallback.
+- `effectiveRequired = min(configuredCount, liveMaximum)`.
+- The transient `這隻皮克敏似乎很忙` message is diagnostic only; it never triggers fallback by itself.
+- A fallback can happen only while GO has not been sent. The previous selection is cancelled/reset before the next filter is applied.
+- If Cancel returns to expedition detail, Pilot re-enters `前往探險` and verifies a fresh selection page.
+- GO is non-idempotent: it is tapped at most once after `selected >= effectiveRequired` **and** the strict GO detector confirms enabled state.
+- GO detector is now restricted to a **large orange/red component in the lower-right corner**, excluding the centre/bottom drone control.
+- Adds a **top-clipped BUSY/COMPLETE card guard** for already-carried fruit partly hidden under the Expedition navigation row. It requires the bottom status border plus both vertical side rails and blocks only up to that border, so nearby valid fruit below is not suppressed.
+- Fruit exclusion-first OCR and seedling logic remain unchanged from alpha19.
+- GitHub Actions runs the SelectionPolicy truth-table unit tests before building the APK.
 
-## Fixes in this build
+## Fallback example
 
-### Accessibility service reconnect / resume
-A real alpha17 log showed Android destroying the AccessibilityService during round 4 (`STOP • Accessibility service stopped`) and binding it again several minutes later. Alpha17 treated service destruction as a user stop, so the run could never continue.
+Primary = 紫 × 6
+Fallback 1 = 岩 × 2
+Fallback 2 = 紅 × 2
+Fallback 3 = 黃 × 2
 
-Alpha18 now treats temporary AccessibilityService loss as recoverable:
+For each plan:
 
-- current round/config/completed count are preserved in the same app process;
-- automation pauses instead of calling `stop()`;
-- screenshot/tap/swipe operations wait for Android to rebind the service;
-- when the service reconnects, the current stage resumes automatically;
-- the normal Stop button still stops immediately;
-- reconnect wait has a 10-minute safety timeout.
+1. apply colour filter
+2. select configured number
+3. read live `selected/maximum`
+4. compute `effectiveRequired = min(configured, maximum)`
+5. if insufficient: cancel/reset and advance to the next enabled plan
+6. if satisfied: reconcile GO state; only then commit GO once
 
-Useful log lines:
+## Build
 
-```text
-ACCESSIBILITY LOST ⚠️ ... automation PAUSED
-ACCESSIBILITY WAIT ⏸️ ... preserving round state
-ACCESSIBILITY RECONNECTED ✅ ... resumeStage=...
-ACCESSIBILITY WAIT END ✅
-```
-
-### Lemon OCR repair
-On real Android logs, ML Kit rendered `檸檬` as `檸樣` and sometimes `樟樣`, causing a valid lemon to be logged as `SKIP[UNKNOWN_LABEL]`. Alpha18 adds a narrow lemon repair after the visual fruit component has already been detected in that cell.
-
-Accepted OCR variants now include:
-
-- `檸檬` / `柠檬`
-- `檸樣` / `柠样`
-- observed `樟樣` / `樟样`
-
-Repaired lemons appear as:
-
-```text
-SCAN-DIAG ACCEPT[FRUIT:LEMON_OCR_REPAIR] 檸樣:...
-```
-
-Alpha17's 24% list swipe, 3000 ms settle, dynamic NAV-GUARD, canonical filter lattice, copy-log UI and anchored Green-X are unchanged.
-
-Build marker: `BUILD 0.3.7-alpha19`.
+The repository is intended to build through GitHub Actions. The workflow installs Android SDK platform 36 / build-tools 35.0.0 and Gradle 8.13, runs `:app:testDebugUnitTest`, then builds `:app:assembleDebug`.

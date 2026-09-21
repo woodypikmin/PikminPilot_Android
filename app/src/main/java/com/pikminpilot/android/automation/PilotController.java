@@ -10,6 +10,7 @@ import android.os.SystemClock;
 import com.pikminpilot.android.detection.CargoDetector;
 import com.pikminpilot.android.detection.Detector;
 import com.pikminpilot.android.model.PilotConfig;
+import com.pikminpilot.android.model.SelectionPolicy;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -34,6 +35,7 @@ public final class PilotController {
     private volatile String currentStage="IDLE";
     private volatile long runStartUptime=0L;
     private final java.util.ArrayDeque<RecentDispatch> recentDispatches=new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<RecentDispatch> failedSelectionSkips=new java.util.ArrayDeque<>();
 
     private static final class RecentDispatch {
         final CargoDetector.Kind kind; final String key; final float nx,ny; final int round;
@@ -78,7 +80,7 @@ public final class PilotController {
 
     public void start(PilotConfig cfg){
         if(running.getAndSet(true)) return;
-        completed=0; recentDispatches.clear(); runStartUptime=SystemClock.elapsedRealtime(); currentStage="START";
+        completed=0; recentDispatches.clear(); failedSelectionSkips.clear(); runStartUptime=SystemClock.elapsedRealtime(); currentStage="START";
         worker.execute(()->run(cfg));
     }
 
@@ -92,7 +94,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.7-alpha19 • exclusion-first fruit OCR • iOS bottom-right GO • accessibility auto-resume • anchored Green-X");
+            emit("BUILD 0.3.8-alpha20 • selection fallback state machine • strict orange-red GO • top-clipped BUSY guard • accessibility auto-resume");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -121,26 +123,12 @@ public final class PilotController {
                 stage("CTA","第 "+round+" 輪：前往探險");
                 enterExpeditionSelectionPage(choice.item.kind,round,cfg);
 
-                stage("FILTER","第 "+round+" 輪：辨識"+PilotConfig.pikminName(cfg.type)+"皮克敏");
-                // On Android the requested chip (especially pink) is often already
-                // visible when the selection sheet opens.  Detect first and only
-                // swipe when necessary.  This avoids a needless second-round swipe
-                // that can move an already-visible pink chip away from the detector.
-                PointAndBitmap filter=findPikminFilterAdaptive(cfg,round);
-                if(filter==null) throw new RuntimeException(PilotConfig.pikminName(cfg.type)+"皮克敏顏色圓圈未辨識到");
-                emit("PIKMIN FILTER TARGET ✅ • type="+PilotConfig.pikminName(cfg.type)+
-                        " • px=("+Math.round(filter.p.x)+","+Math.round(filter.p.y)+")"+
-                        " • norm=("+String.format(java.util.Locale.US,"%.3f",filter.p.x/Math.max(1f,filter.b.getWidth()))+","+
-                        String.format(java.util.Locale.US,"%.3f",filter.p.y/Math.max(1f,filter.b.getHeight()))+") • detector=canonical-chip-lattice");
-                applyPikminFilterWithAck(filter,cfg,round);
-
-                stage("SELECT","第 "+round+" 輪：選擇 "+cfg.pikminCount+" 隻皮克敏");
-                selectPikminFastGeometric(cfg,round);
-
-                stage("GO","第 "+round+" 輪：等待 GO 亮起");
-                PointAndBitmap go=waitPoint("GO",8,cfg.fast?60:90,Detector::detectActiveGo);
-                if(go==null) throw new RuntimeException("GO 未亮起 / 未辨識到");
-                tapMapped(go.b,go.p.x,go.p.y,55,"GO");
+                SelectionCommit commit=runSelectionPlans(cfg,round,choice.item.kind);
+                if(!commit.sent){
+                    emit("ROUND "+round+" • all selection plans insufficient • cargo safely skipped");
+                    temporarilySkip(choice,round);
+                    continue;
+                }
                 sleep(cfg.fast?420:560);
 
                 stage("GREEN_X","第 "+round+" 輪：關閉傳送頁面綠色 X");
@@ -190,6 +178,10 @@ public final class PilotController {
             available.removeIf(c->isExactRecentDispatch(c,b,round));
             if(beforeRecent!=available.size())
                 emit("SCAN-DIAG SKIP[EXACT_RECENT_DISPATCH] count="+(beforeRecent-available.size()));
+            int beforeFailed=available.size();
+            available.removeIf(c->isFailedSelectionSkip(c,b,round));
+            if(beforeFailed!=available.size())
+                emit("SCAN-DIAG SKIP[SELECTION_FAILED_RECENT] count="+(beforeFailed-available.size()));
             // This latch is intentionally very narrow. It only blocks the same
             // normalized label at essentially the same screen slot; neighbouring
             // seedlings are left to the current-frame card detector.
@@ -367,7 +359,7 @@ public final class PilotController {
      * No OCR fallback Y and no blind swipe are permitted.  If the row cannot be
      * proven, stop instead of dragging random parts of the selection grid.
      */
-    private PointAndBitmap findPikminFilterAdaptive(PilotConfig cfg,int round)throws Exception{
+    private PointAndBitmap findPikminFilterAdaptive(PilotConfig cfg,int round,PilotConfig.PikminType targetType)throws Exception{
         Bitmap frame=shot();
         int swipes=0;
 
@@ -384,9 +376,9 @@ public final class PilotController {
                 return null;
             }
 
-            float tx=lattice.targetX(cfg.type);
+            float tx=lattice.targetX(targetType);
             boolean visible=tx>=frame.getWidth()*0.055f&&tx<=frame.getWidth()*0.945f;
-            boolean plausible=visible&&Detector.filterTargetLooksPlausible(frame,lattice,cfg.type);
+            boolean plausible=visible&&Detector.filterTargetLooksPlausible(frame,lattice,targetType);
 
             emit("FILTER LATTICE ✅ • evidence="+lattice.evidenceCount+
                     " • rowY="+Math.round(lattice.rowY)+
@@ -421,7 +413,7 @@ public final class PilotController {
             // colour/brightness is not present.  Do NOT swipe somewhere else:
             // that is exactly how alpha14 wandered into the Pikmin grid.
             emit("FILTER TARGET REJECTED ⚠️ • proven row, on-screen slot does not look like "+
-                    PilotConfig.pikminName(cfg.type)+" • NO SWIPE");
+                    PilotConfig.pikminName(targetType)+" • NO SWIPE");
             if(attempt<2){
                 sleep(cfg.fast?160:240);
                 frame=shot();
@@ -461,7 +453,7 @@ public final class PilotController {
      * tap.  Use that visual change as a lightweight ACK; retry the same proven
      * slot once before allowing Pikmin selection to start.
      */
-    private void applyPikminFilterWithAck(PointAndBitmap filter,PilotConfig cfg,int round)throws Exception{
+    private void applyPikminFilterWithAck(PointAndBitmap filter,PilotConfig cfg,int round,PilotConfig.PikminType targetType)throws Exception{
         PointAndBitmap current=filter;
         Detector.FilterLattice beforeLattice=Detector.detectFilterLattice(current.b);
         float beforeScore=Detector.filterRowSaturationScore(current.b,beforeLattice);
@@ -497,9 +489,9 @@ public final class PilotController {
                     emit("PIKMIN FILTER RETRY ABORT ⚠️ • row disappeared after tap");
                     throw new RuntimeException("皮克敏顏色圓圈點擊後狀態無法確認");
                 }
-                float tx=afterLattice.targetX(cfg.type);
+                float tx=afterLattice.targetX(targetType);
                 if(tx<after.getWidth()*0.055f||tx>after.getWidth()*0.945f||
-                        !Detector.filterTargetLooksPlausible(after,afterLattice,cfg.type)){
+                        !Detector.filterTargetLooksPlausible(after,afterLattice,targetType)){
                     emit("PIKMIN FILTER RETRY ABORT ⚠️ • target slot no longer proven");
                     throw new RuntimeException("皮克敏顏色圓圈點擊後目標位置無法確認");
                 }
@@ -522,8 +514,7 @@ public final class PilotController {
      * for N/MAX after every tap made selection slow and incorrectly treated a
      * valid maxed-out party as an error.
      */
-    private void selectPikminFastGeometric(PilotConfig cfg,int round)throws Exception{
-        final int desired=cfg.pikminCount;
+    private void selectPikminFastGeometric(PilotConfig cfg,int round,int desired)throws Exception{
         Bitmap frame=shot();
         List<PointF> grid=Detector.detectPikminSelectionGrid(frame);
         if(grid.size()<Math.min(12,Math.max(2,desired)))
@@ -550,6 +541,213 @@ public final class PilotController {
             sleep(cfg.fast?35:55);
         }
         sleep(cfg.fast?100:160);
+    }
+
+
+    private static final class SelectionCommit {
+        final boolean sent;
+        final String planName;
+        SelectionCommit(boolean sent,String planName){this.sent=sent;this.planName=planName;}
+    }
+
+    private static final class SelectionObservedNow {
+        final int selected,maximum;
+        final String source;
+        SelectionObservedNow(int selected,int maximum,String source){this.selected=selected;this.maximum=maximum;this.source=source;}
+    }
+    private static final class SelectionBecameInsufficientException extends Exception {
+        final SelectionObservedNow observed;
+        SelectionBecameInsufficientException(SelectionObservedNow observed){super("selection count became insufficient before GO");this.observed=observed;}
+    }
+
+    /**
+     * Pre-GO selection fallback chain.  The live selected/maximum counter is the
+     * source of truth; the transient "似乎很忙" toast is diagnostic only.
+     */
+    private SelectionCommit runSelectionPlans(PilotConfig cfg,int round,CargoDetector.Kind kind)throws Exception{
+        java.util.List<PilotConfig.SelectionPlan> plans=new java.util.ArrayList<>();
+        for(PilotConfig.SelectionPlan p:cfg.selectionPlans) if(p.enabled) plans.add(p);
+        if(plans.isEmpty()) throw new RuntimeException("沒有啟用的皮克敏選擇方案");
+
+        for(int pi=0;pi<plans.size()&&running.get();pi++){
+            PilotConfig.SelectionPlan plan=plans.get(pi);
+            stage("FILTER","第 "+round+" 輪："+plan.name+" • "+PilotConfig.pikminName(plan.type)+"皮");
+            emit("SELECTION PLAN • "+plan.name+" • type="+PilotConfig.pikminName(plan.type)+"皮 • configured="+plan.configuredCount);
+
+            PointAndBitmap filter=findPikminFilterAdaptive(cfg,round,plan.type);
+            if(filter==null) throw new RuntimeException(plan.name+" "+PilotConfig.pikminName(plan.type)+"皮克敏顏色圓圈未辨識到");
+            emit("PIKMIN FILTER TARGET ✅ • plan="+plan.name+" • type="+PilotConfig.pikminName(plan.type)+
+                    " • px=("+Math.round(filter.p.x)+","+Math.round(filter.p.y)+")"+
+                    " • norm=("+String.format(java.util.Locale.US,"%.3f",filter.p.x/Math.max(1f,filter.b.getWidth()))+","+
+                    String.format(java.util.Locale.US,"%.3f",filter.p.y/Math.max(1f,filter.b.getHeight()))+") • detector=canonical-chip-lattice");
+            applyPikminFilterWithAck(filter,cfg,round,plan.type);
+
+            stage("SELECT","第 "+round+" 輪："+plan.name+" 選擇 "+plan.configuredCount+" 隻");
+            selectPikminFastGeometric(cfg,round,plan.configuredCount);
+
+            SelectionObservedNow observed=readSelectionObservedBounded(cfg,4);
+            if(observed==null) throw new RuntimeException("selection count 無法讀取 selected/maximum");
+            int effective=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
+            emit("SELECTION COUNT • selected="+observed.selected+"/"+observed.maximum+
+                    " • configured="+plan.configuredCount+" • effective-required="+effective+
+                    " • source="+observed.source);
+
+            if(observed.selected<effective){
+                emit("SELECTION FALLBACK • "+plan.name+" insufficient • GO NOT SENT");
+                if(pi+1<plans.size()){
+                    cancelAndResetSelection(cfg,round,kind,observed.maximum);
+                    continue;
+                }
+                emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT");
+                cancelAndResetSelection(cfg,round,kind,observed.maximum);
+                returnToExpeditionListAfterSelectionFailure(cfg,round);
+                return new SelectionCommit(false,plan.name);
+            }
+
+            stage("GO","第 "+round+" 輪："+plan.name+" • 確認 GO");
+            PointAndBitmap go;
+            try{
+                go=reconcileGoPreCommit(cfg,plan,observed,effective);
+            }catch(SelectionBecameInsufficientException changed){
+                emit("SELECTION FALLBACK • "+plan.name+" became insufficient during GO reconcile • GO NOT SENT");
+                if(pi+1<plans.size()){
+                    cancelAndResetSelection(cfg,round,kind,changed.observed.maximum);
+                    continue;
+                }
+                cancelAndResetSelection(cfg,round,kind,changed.observed.maximum);
+                returnToExpeditionListAfterSelectionFailure(cfg,round);
+                return new SelectionCommit(false,plan.name);
+            }
+            if(go==null) throw new RuntimeException("GO/UI state recovery failed while selection count remained satisfied");
+            emit("SELECTION COMMIT ✅ • "+plan.name+" • selected="+observed.selected+"/"+observed.maximum+
+                    " • effective-required="+effective+" • GO enabled");
+            // Non-idempotent: exactly one GO tap. Never blind retry after this line.
+            tapMapped(go.b,go.p.x,go.p.y,55,"GO COMMIT "+plan.name);
+            emit("GO SENT ✅ • plan="+plan.name+" • non-idempotent commit; no blind retry");
+            return new SelectionCommit(true,plan.name);
+        }
+        return new SelectionCommit(false,"none");
+    }
+
+    private SelectionObservedNow readSelectionObservedBounded(PilotConfig cfg,int attempts)throws Exception{
+        for(int i=0;i<attempts&&running.get();i++){
+            PilotAccessibilityService svc=waitForService();
+            try{
+                PilotAccessibilityService.SelectionCountResult tree=svc.readSelectionCountFromTree();
+                if(tree!=null){
+                    emit("SELECTION COUNT SOURCE ✅ • UI tree • "+tree.selected+"/"+tree.maximum);
+                    return new SelectionObservedNow(tree.selected,tree.maximum,tree.source);
+                }
+            }catch(Throwable ignored){}
+
+            Bitmap b=shot();
+            try{
+                java.util.List<CargoDetector.OcrItem> ocr=CargoDetector.recognize(b);
+                if(CargoDetector.hasBusyToast(ocr)) emit("SELECTION DIAG • transient busy toast observed (not source of truth)");
+                CargoDetector.SelectionObserved v=CargoDetector.selectionObserved(ocr);
+                if(v!=null){
+                    emit("SELECTION COUNT SOURCE ✅ • screenshot OCR • "+v.selected+"/"+v.maximum);
+                    return new SelectionObservedNow(v.selected,v.maximum,v.source);
+                }
+            }catch(Throwable t){
+                emit("SELECTION COUNT OCR RETRY • attempt="+(i+1)+"/"+attempts+" • "+t.getMessage());
+            }
+            sleep(cfg.fast?180:280);
+        }
+        return null;
+    }
+
+    private PointAndBitmap reconcileGoPreCommit(PilotConfig cfg,PilotConfig.SelectionPlan plan,
+                                                  SelectionObservedNow initial,int effective)throws Exception{
+        SelectionObservedNow observed=initial;
+        for(int i=0;i<3&&running.get();i++){
+            Bitmap b=shot();
+            PointF go=Detector.detectActiveGo(b);
+            if(go!=null){
+                emit("GO RECONCILE ✅ • state=enabled • attempt="+(i+1)+"/3 • px=("+
+                        Math.round(go.x)+","+Math.round(go.y)+")");
+                return new PointAndBitmap(go,b);
+            }
+            emit("GO RECONCILE • state=unknown/disabled • attempt="+(i+1)+"/3 • no fallback yet");
+            if(i<2){
+                SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
+                if(reread!=null){
+                    observed=reread;
+                    int req=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
+                    emit("GO RECONCILE COUNT • selected="+observed.selected+"/"+observed.maximum+" • effective-required="+req);
+                    if(observed.selected<req){
+                        // This is now genuine insufficiency, still pre-GO.
+                        emit("GO RECONCILE → INSUFFICIENT • count changed before commit");
+                        throw new SelectionBecameInsufficientException(observed);
+                    }
+                }
+                Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
+                if(row==null) throw new RuntimeException("selection page disappeared before GO commit; refusing retry/fallback");
+                sleep(cfg.fast?220:360);
+            }
+        }
+        return null;
+    }
+
+    private void cancelAndResetSelection(PilotConfig cfg,int round,CargoDetector.Kind kind,int priorMaximum)throws Exception{
+        // Must remain pre-GO. This method is never called after GO SENT.
+        for(int attempt=1;attempt<=2&&running.get();attempt++){
+            Bitmap b=shot();
+            java.util.List<CargoDetector.OcrItem> ocr;
+            try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
+            if(CargoDetector.hasBusyToast(ocr)) emit("SELECTION DIAG • transient『似乎很忙』toast seen • diagnostic only");
+            PointF cancel=CargoDetector.cancelPoint(ocr);
+            if(cancel==null) cancel=Detector.detectSelectionCancel(b);
+            if(cancel==null) throw new RuntimeException("fallback reset 無法辨識左下『取消』");
+            tapMapped(b,cancel.x,cancel.y,70,"SELECTION CANCEL");
+            sleep(cfg.fast?320:520);
+
+            SelectionObservedNow after=readSelectionObservedBounded(cfg,2);
+            if(after!=null&&after.selected==0){
+                emit("SELECTION RESET ✅ • selected=0/"+after.maximum+" • source="+after.source);
+                return;
+            }
+
+            // Cancel may leave the selection sheet and return to expedition detail.
+            Bitmap state=shot();
+            PointF pill=Detector.detectExpeditionCtaPill(state);
+            if(pill!=null){
+                emit("SELECTION RESET ✅ • cancel returned to expedition detail • re-enter selection");
+                enterExpeditionSelectionPage(kind,round,cfg);
+                SelectionObservedNow reentered=readSelectionObservedBounded(cfg,2);
+                if(reentered!=null&&reentered.selected==0){
+                    emit("SELECTION RESET ✅ • re-entered selected=0/"+reentered.maximum);
+                    return;
+                }
+                // Fresh re-entry is enough to guarantee the previous selected set
+                // was not carried forward even if the counter OCR is temporarily weak.
+                if(Detector.detectFilterRowGeometry(shot())!=null){
+                    emit("SELECTION RESET ✅ • fresh selection page verified by filter row");
+                    return;
+                }
+            }
+            emit("SELECTION RESET RETRY • attempt="+attempt+"/2");
+        }
+        throw new RuntimeException("fallback reset failed; refusing to stack Pikmin from previous plan");
+    }
+
+    private void returnToExpeditionListAfterSelectionFailure(PilotConfig cfg,int round)throws Exception{
+        PilotAccessibilityService svc=waitForService();
+        for(int i=1;i<=3&&running.get();i++){
+            Bitmap b=shot();
+            try{
+                CargoDetector.Result r=CargoDetector.scan(b);
+                int evidence=r.fruits.size()+r.seedlings.size()+r.blocked.size()+r.cards.size();
+                if(r.navGuardProven&&evidence>=2){
+                    emit("SELECTION ABORT RETURN ✅ • expedition list verified • evidence="+evidence);
+                    return;
+                }
+            }catch(Throwable ignored){}
+            boolean ok=svc.globalBack();
+            emit("SELECTION ABORT BACK • attempt="+i+"/3 • dispatched="+ok);
+            sleep(cfg.fast?500:800);
+        }
+        throw new RuntimeException("all selection plans insufficient and could not safely return to expedition list");
     }
 
     /**
@@ -662,6 +860,29 @@ public final class PilotController {
         return k;
     }
 
+
+    private void temporarilySkip(CargoAndBitmap choice,int round){
+        if(choice==null||choice.item==null||choice.b==null)return;
+        String key=dispatchKey(choice.item);
+        float nx=choice.item.center.x/Math.max(1f,choice.b.getWidth());
+        float ny=choice.item.center.y/Math.max(1f,choice.b.getHeight());
+        failedSelectionSkips.addLast(new RecentDispatch(choice.item.kind,key,nx,ny,round));
+        while(failedSelectionSkips.size()>6)failedSelectionSkips.removeFirst();
+        emit("SELECTION-FAILED SKIP LATCH ✅ • key="+key+" • round="+round);
+    }
+
+    private boolean isFailedSelectionSkip(CargoDetector.Candidate c,Bitmap b,int round){
+        if(c==null||b==null)return false;
+        String key=dispatchKey(c);float nx=c.center.x/Math.max(1f,b.getWidth()),ny=c.center.y/Math.max(1f,b.getHeight());
+        for(RecentDispatch r:failedSelectionSkips){
+            if(round-r.round>2||r.kind!=c.kind)continue;
+            boolean sameKey=!key.isEmpty()&&key.equals(r.key);
+            boolean sameSlot=Math.abs(nx-r.nx)<=0.035f&&Math.abs(ny-r.ny)<=0.045f;
+            if(sameKey&&sameSlot)return true;
+        }
+        return false;
+    }
+
     private void rememberDispatch(CargoAndBitmap choice,int round){
         if(choice==null||choice.item==null||choice.b==null)return;
         String key=dispatchKey(choice.item);
@@ -696,6 +917,7 @@ public final class PilotController {
         if(m.contains("screenshot"))return "E_SCREENSHOT";
         if(m.contains("前往探險")||m.contains("cta"))return "E_CTA";
         if(m.contains("顏色圓圈")||m.contains("filter"))return "E_FILTER";
+        if(m.contains("selection count")||m.contains("fallback reset")||m.contains("selection plans")||m.contains("selected/maximum"))return "E_SELECTION_STATE";
         if(m.contains("格線")||m.contains("pikmin grid"))return "E_PIKMIN_GRID";
         if(m.contains("go ")||m.startsWith("go")||m.contains("go未")||m.contains("go 未"))return "E_GO";
         if(m.contains("green x")||m.contains("綠色 x")||m.contains("綠色x"))return "E_GREEN_X_ACK";
@@ -819,7 +1041,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.7-alpha19 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.8-alpha20 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

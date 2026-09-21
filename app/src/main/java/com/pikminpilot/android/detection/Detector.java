@@ -66,6 +66,9 @@ public final class Detector {
         public float targetX(PilotConfig.PikminType type){
             int i;
             switch(type){
+                case RED:i=0;break;
+                case YELLOW:i=1;break;
+                case BLUE:i=2;break;
                 case PURPLE:i=3;break;
                 case WHITE:i=4;break;
                 case PINK:i=5;break;
@@ -433,6 +436,12 @@ public final class Detector {
         if(Float.isNaN(x)||x<w*0.055f||x>w*0.945f) return false;
         Hsv v=patchHsv(b,x,l.rowY,Math.max(4f,Math.min(b.getWidth(),b.getHeight())*0.010f));
         switch(type) {
+            case RED:
+                return (v.h<=28||v.h>=340)&&v.s>=0.45&&v.v>=0.60;
+            case YELLOW:
+                return v.h>=38&&v.h<=78&&v.s>=0.42&&v.v>=0.62;
+            case BLUE:
+                return v.h>=185&&v.h<=235&&v.s>=0.35&&v.v>=0.55;
             case PURPLE:
                 return v.h>=270&&v.h<=338&&v.s>=0.13&&v.v>=0.58;
             case PINK:
@@ -607,32 +616,62 @@ public final class Detector {
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
 
-        // Direct port of the proven iOS detectActiveGO search window.  The GO
-        // commit control is the large warm/red circle in the BOTTOM-RIGHT.  The
-        // previous Android port widened this to x>=0.42 / y>=0.58, which also
-        // exposed the centre-bottom expedition/drone icon and could tap it.
-        int x0=Math.max(0,(int)(vp.left+vp.width()*0.60));
+        // GO is a non-idempotent commit action.  Be intentionally stricter than
+        // ordinary button detectors: only accept a LARGE orange/red component in
+        // the bottom-right corner.  This excludes the expedition/drone control,
+        // which can light at the same time but is smaller and/or more central.
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.70));
         int x1=Math.min(w,(int)vp.right);
         int y0=Math.max(0,(int)(vp.top+vp.height()*0.76));
         int y1=Math.min(h,(int)vp.bottom);
         boolean[] mask=new boolean[w*h];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
-            boolean warm=v.h<60||v.h>336;
-            if(warm&&v.s>0.27&&v.v>0.56) mask[y*w+x]=true;
+            // Active GO is orange/red, not generic warm yellow/beige.
+            boolean orangeRed=(v.h<=48||v.h>=345);
+            if(orangeRed&&v.s>=0.34&&v.v>=0.60) mask[y*w+x]=true;
         }
         double area=Math.max(1,vp.width()*vp.height());
-        PointF best=null; int bestCount=-1;
+        PointF best=null; double bestScore=-1e9;
         for(Component c:components(mask,w,h)) {
-            if(c.count<area*0.0010) continue;
-            if(c.rect.width()<vp.width()*0.07||c.rect.height()<vp.height()*0.04) continue;
+            double wf=c.rect.width()/Math.max(1.0,vp.width());
+            double hf=c.rect.height()/Math.max(1.0,vp.height());
+            double aspect=c.rect.width()/Math.max(1.0,c.rect.height());
+            double fill=c.count/Math.max(1.0,c.rect.width()*c.rect.height());
+            if(c.count<area*0.0020) continue;
+            if(wf<0.135||hf<0.060) continue;
+            if(aspect<0.62||aspect>1.55) continue;
+            if(fill<0.24) continue;
             PointF center=c.center();
             double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
             double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
-            // Additional Android safety: even a large warm Pikmin/art component
-            // cannot be GO unless its centre is actually in the lower-right zone.
-            if(nx<0.68||ny<0.78) continue;
-            if(c.count>bestCount){bestCount=c.count;best=center;}
+            if(nx<0.76||ny<0.80) continue;
+            double score=c.count/area*7.0 + fill*0.8 - Math.abs(nx-0.86)*0.25 - Math.abs(ny-0.90)*0.25;
+            if(score>bestScore){bestScore=score;best=center;}
+        }
+        return best;
+    }
+
+    public static PointF detectSelectionCancel(Bitmap b){
+        int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
+        int x0=Math.max(0,(int)(vp.left+vp.width()*0.02f));
+        int x1=Math.min(w,(int)(vp.left+vp.width()*0.46f));
+        int y0=Math.max(0,(int)(vp.top+vp.height()*0.76f));
+        int y1=Math.min(h,(int)vp.bottom);
+        boolean[] mask=new boolean[w*h];
+        for(int y=y0;y<y1;y++)for(int x=x0;x<x1;x++){
+            Hsv v=hsv(b.getPixel(x,y));
+            if(v.s<=0.16&&v.v>=0.82)mask[y*w+x]=true;
+        }
+        double area=Math.max(1.0,vp.width()*vp.height());
+        PointF best=null;double bestScore=-1e9;
+        for(Component c:components(mask,w,h)){
+            double wf=c.rect.width()/Math.max(1.0,vp.width()),hf=c.rect.height()/Math.max(1.0,vp.height());
+            if(c.count<area*0.0020||wf<0.12||wf>0.42||hf<0.035||hf>0.16)continue;
+            PointF center=c.center();double nx=(center.x-vp.left)/Math.max(1.0,vp.width()),ny=(center.y-vp.top)/Math.max(1.0,vp.height());
+            if(nx>0.43||ny<0.78)continue;
+            double score=c.count/area-Math.abs(nx-0.18)*0.02-Math.abs(ny-0.90)*0.02;
+            if(score>bestScore){bestScore=score;best=center;}
         }
         return best;
     }
