@@ -41,8 +41,8 @@ public class SelectionPolicyTest {
     @Test public void enabledGo_neverSwitchesFallbackInPlace(){
         assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,true,false,true));
     }
-    @Test public void visibleCancel_usesNormalResetInsteadOfInPlaceSwitch(){
-        assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,false,true,true));
+    @Test public void zeroSelected_withVisibleCancel_stillSwitchesFallbackInPlace(){
+        assertTrue(SelectionPolicy.canSwitchFallbackInPlace(0,false,true,true));
     }
     @Test public void missingSelectionPage_neverSwitchesFallbackInPlace(){
         assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,false,false,false));

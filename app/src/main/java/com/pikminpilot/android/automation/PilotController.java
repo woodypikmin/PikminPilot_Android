@@ -100,7 +100,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.3-alpha25 • bottom BUSY header guard • edge 2-frame AVAILABLE ACK • adaptive screenshot throttle • sticky fallback cursor");
+            emit("BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • loading-safe GO gate • free run-count • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -566,6 +566,7 @@ public final class PilotController {
         throw new RuntimeException("皮克敏顏色圓圈點擊未生效");
     }
 
+
     /**
      * Fast iOS-style selection with Android-safe geometric slot centres.
      *
@@ -575,8 +576,8 @@ public final class PilotController {
      * for N/MAX after every tap made selection slow and incorrectly treated a
      * valid maxed-out party as an error.
      */
-    private void selectPikminFastGeometric(PilotConfig cfg,int round,int desired)throws Exception{
-        Bitmap frame=shot();
+    private void selectPikminFastGeometric(PilotConfig cfg,int round,int desired,Bitmap readyFrame)throws Exception{
+        Bitmap frame=readyFrame!=null?readyFrame:shot();
         List<PointF> grid=Detector.detectPikminSelectionGrid(frame);
         if(grid.size()<Math.min(12,Math.max(2,desired)))
             throw new RuntimeException("皮克敏格線辨識失敗：points="+grid.size());
@@ -619,7 +620,11 @@ public final class PilotController {
     private static final class GoReconcileResult {
         final PointAndBitmap go;
         final SelectionObservedNow observed;
-        GoReconcileResult(PointAndBitmap go,SelectionObservedNow observed){this.go=go;this.observed=observed;}
+        final boolean loadingSeen;
+        final boolean loadingStill;
+        GoReconcileResult(PointAndBitmap go,SelectionObservedNow observed,boolean loadingSeen,boolean loadingStill){
+            this.go=go;this.observed=observed;this.loadingSeen=loadingSeen;this.loadingStill=loadingStill;
+        }
     }
 
     /**
@@ -696,20 +701,64 @@ public final class PilotController {
             applyPikminFilterWithAck(filter,cfg,round,plan.type);
 
             stage("SELECT","第 "+round+" 輪："+plan.name+" 選擇 "+plan.configuredCount+" 隻");
-            selectPikminFastGeometric(cfg,round,plan.configuredCount);
+            Bitmap preTapFrame=shot();
+            int loadingBeforeTap=Detector.selectionLoadingPlaceholderCount(preTapFrame);
+            if(loadingBeforeTap>0){
+                emit("SELECTION LOADING ⏳ • placeholders="+loadingBeforeTap+
+                        " • taps are still allowed • Cancel/Fallback LOCKED until loading clears");
+            }
+            // Do NOT wait for the sprites to finish loading. The slot geometry is
+            // already stable and Pikmin Bloom accepts taps on the placeholder
+            // positions.  The important safety rule is only that loading must
+            // never be interpreted as insufficiency / a reason to Cancel.
+            selectPikminFastGeometric(cfg,round,plan.configuredCount,preTapFrame);
 
-            SelectionObservedNow observed=readSelectionObservedBounded(cfg,4);
-            if(observed==null) throw new RuntimeException("selection count 無法讀取 selected/maximum");
-            int effective=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
-            emit("SELECTION COUNT • selected="+observed.selected+"/"+observed.maximum+
-                    " • configured="+plan.configuredCount+" • effective-required="+effective+
-                    " • source="+observed.source);
+            SelectionObservedNow observed=readSelectionObservedBounded(cfg,3);
+            if(observed==null){
+                observed=new SelectionObservedNow(0,Math.max(1,plan.configuredCount),"UNAVAILABLE-PRELOAD");
+                emit("SELECTION COUNT WAIT • selected/maximum not readable yet • defer fallback; GO/loading is source of truth");
+            }else{
+                int effective=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
+                emit("SELECTION COUNT • selected="+observed.selected+"/"+observed.maximum+
+                        " • configured="+plan.configuredCount+" • effective-required="+effective+
+                        " • source="+observed.source);
+            }
 
-            // IMPORTANT: do NOT fallback merely because selected < configured/effective.
-            // Pikmin Bloom can enable GO with a smaller legal team (e.g. 4/12).
+            // GO is authoritative. A smaller-than-configured team may still be
+            // legal, and loading placeholders can temporarily leave the count at
+            // 0/N even though the taps were already issued.
             stage("GO","第 "+round+" 輪："+plan.name+" • 確認 GO");
             GoReconcileResult reconciled=reconcileGoPreCommit(cfg,plan,observed);
             SelectionObservedNow finalObserved=reconciled.observed==null?observed:reconciled.observed;
+
+            // If this phone was visibly loading and the queued taps ended with a
+            // genuine 0-selected state after loading cleared, retry the SAME plan
+            // once on the now-stable grid. Never Cancel just because loading was
+            // seen.
+            if(reconciled.go==null && reconciled.loadingSeen && !reconciled.loadingStill && finalObserved.selected==0){
+                emit("SELECTION LOAD RECOVERY ↻ • loading cleared • selected=0 • GO off • retry SAME plan once • NO Cancel");
+                Bitmap stableFrame=shot();
+                selectPikminFastGeometric(cfg,round,plan.configuredCount,stableFrame);
+                SelectionObservedNow retryObserved=readSelectionObservedBounded(cfg,3);
+                if(retryObserved!=null) finalObserved=retryObserved;
+                reconciled=reconcileGoPreCommit(cfg,plan,finalObserved);
+                if(reconciled.observed!=null) finalObserved=reconciled.observed;
+            }
+
+            if(finalObserved.source.startsWith("UNAVAILABLE")){
+                if(reconciled.go!=null){
+                    // Strict bottom-right orange/red GO is authoritative: the
+                    // game cannot enable it with an empty/illegal team.  Do not
+                    // throw away a valid commit merely because OCR/UI-tree text
+                    // is late while the roster is loading.
+                    finalObserved=new SelectionObservedNow(1,1,"GO-AUTHORITATIVE");
+                    emit("SELECTION COUNT BYPASS ✅ • count unavailable but strict GO is enabled • treat team as legal/non-zero");
+                }else{
+                    SelectionObservedNow reread=readSelectionObservedBounded(cfg,3);
+                    if(reread==null) throw new RuntimeException("selection count 仍不可讀；拒絕把 loading/unknown 誤判成不足並取消");
+                    finalObserved=reread;
+                }
+            }
             int finalEffective=SelectionPolicy.effectiveRequired(plan.configuredCount,finalObserved.maximum);
 
             if(reconciled.go!=null){
@@ -787,29 +836,67 @@ public final class PilotController {
     private GoReconcileResult reconcileGoPreCommit(PilotConfig cfg,PilotConfig.SelectionPlan plan,
                                                      SelectionObservedNow initial)throws Exception{
         SelectionObservedNow observed=initial;
-        for(int i=0;i<3&&running.get();i++){
+        boolean loadingSeen=false;
+        boolean loadingStill=false;
+        int stableNonLoading=0;
+        long started=android.os.SystemClock.uptimeMillis();
+        final long minNoGoSettleMs=3000L;
+        final long hardLoadingGuardMs=12000L;
+        int attempt=0;
+
+        while(running.get()){
+            attempt++;
             Bitmap b=shot();
             PointF go=Detector.detectActiveGo(b);
             if(go!=null){
-                emit("GO RECONCILE ✅ • state=enabled • attempt="+(i+1)+"/3 • px=("+
-                        Math.round(go.x)+","+Math.round(go.y)+") • selected="+observed.selected+"/"+observed.maximum);
-                return new GoReconcileResult(new PointAndBitmap(go,b),observed);
+                String countText=observed==null?"unknown":(observed.selected+"/"+observed.maximum);
+                emit("GO RECONCILE ✅ • state=enabled • attempt="+attempt+" • px=("+
+                        Math.round(go.x)+","+Math.round(go.y)+") • selected="+countText);
+                return new GoReconcileResult(new PointAndBitmap(go,b),observed,loadingSeen,false);
             }
-            emit("GO RECONCILE • state=unknown/disabled • attempt="+(i+1)+"/3 • no fallback yet");
-            if(i<2){
-                SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
-                if(reread!=null){
-                    observed=reread;
-                    int req=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
-                    emit("GO RECONCILE COUNT • selected="+observed.selected+"/"+observed.maximum+" • effective-required="+req+
-                            " • GO remains source of truth if it becomes enabled");
+
+            int placeholders=Detector.selectionLoadingPlaceholderCount(b);
+            loadingStill=placeholders>0 || Detector.isSelectionGridLoading(b);
+            long elapsed=android.os.SystemClock.uptimeMillis()-started;
+            if(loadingStill){
+                loadingSeen=true;
+                stableNonLoading=0;
+                emit("SELECTION LOADING ⏳ • GO off • placeholders="+placeholders+
+                        " • elapsed="+elapsed+"ms • Cancel/Fallback LOCKED • keep waiting");
+                if(elapsed>=hardLoadingGuardMs){
+                    emit("SELECTION LOADING TIMEOUT ⚠️ • still loading after "+elapsed+"ms • fail closed; NO Cancel/Fallback");
+                    throw new RuntimeException("selection page still loading; refusing cancel/fallback");
                 }
-                Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
-                if(row==null) throw new RuntimeException("selection page disappeared before GO commit; refusing retry/fallback");
-                sleep(cfg.fast?220:360);
+                sleep(cfg.fast?420:620);
+                continue;
             }
+
+            stableNonLoading++;
+            emit("GO RECONCILE • state=unknown/disabled • attempt="+attempt+
+                    " • stable-nonloading="+stableNonLoading+" • elapsed="+elapsed+"ms • no fallback yet");
+
+            SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
+            if(reread!=null){
+                observed=reread;
+                int req=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
+                emit("GO RECONCILE COUNT • selected="+observed.selected+"/"+observed.maximum+" • effective-required="+req+
+                        " • GO remains source of truth if it becomes enabled");
+            }
+
+            java.util.List<CargoDetector.OcrItem> ocr;
+            try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
+            Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
+            boolean selectionVisible=row!=null || CargoDetector.hasSelectionHeader(ocr);
+            if(!selectionVisible) throw new RuntimeException("selection page disappeared before GO commit; refusing retry/fallback");
+
+            // Require a real settling window AND two consecutive non-loading
+            // frames before insufficiency is allowed to trigger fallback.
+            if(elapsed>=minNoGoSettleMs && stableNonLoading>=2){
+                return new GoReconcileResult(null,observed,loadingSeen,false);
+            }
+            sleep(cfg.fast?320:500);
         }
-        return new GoReconcileResult(null,observed);
+        return new GoReconcileResult(null,observed,loadingSeen,loadingStill);
     }
 
     private void cancelAndResetSelection(PilotConfig cfg,int round,CargoDetector.Kind kind,SelectionObservedNow priorObserved)throws Exception{
@@ -825,13 +912,11 @@ public final class PilotController {
             // zero-select/no-Cancel bypass has been considered.
             PointF cancel=CargoDetector.cancelPoint(ocr);
 
-            // Zero-select special case: when this colour has literally no
-            // selectable Pikmin, Pikmin Bloom shows neither an enabled GO nor
-            // the lower-left 「取消」 pill (the lower-left control may instead
-            // be a simple back arrow).  There is nothing to clear, so pressing
-            // a guessed control is both unnecessary and dangerous.  Prove we
-            // are still on the selection page, prove GO is absent, and switch
-            // the next fallback colour in-place.
+            // Zero-select special case: there is nothing to clear. Some builds
+            // show no Cancel (only a back arrow); others may still render a
+            // Cancel pill. Either way, if selected==0, GO is absent, and the
+            // selection page is proven, navigation is unnecessary and risky.
+            // Switch the next fallback colour in-place.
             PointF goNow=Detector.detectActiveGo(b);
             Detector.FilterRowGeometry rowNow=Detector.detectFilterRowGeometry(b);
             boolean selectionVisible=rowNow!=null || CargoDetector.hasSelectionHeader(ocr);
@@ -841,14 +926,16 @@ public final class PilotController {
                 SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
                 if(reread!=null) selectedNow=reread.selected;
             }
-            if(cancel==null && SelectionPolicy.canSwitchFallbackInPlace(selectedNow,goNow!=null,false,selectionVisible)){
-                emit("SELECTION RESET BYPASS ✅ • selected=0 • GO absent • no Cancel • lower-left back arrow untouched • switch fallback colour in-place");
+            if(SelectionPolicy.canSwitchFallbackInPlace(selectedNow,goNow!=null,cancel!=null,selectionVisible)){
+                emit("SELECTION RESET BYPASS ✅ • selected=0 • GO absent • selection page visible"+
+                        " • Cancel="+(cancel!=null?"visible-but-unneeded":"absent")+
+                        " • switch fallback colour in-place; no navigation tap");
                 return;
             }
 
             // Only a state with something selected is allowed to use the visual
-            // Cancel-shape fallback.  This prevents the empty-selection BACK
-            // arrow from ever being mistaken for Cancel.
+            // Cancel-shape fallback. This prevents both the empty-selection BACK
+            // arrow and a transient loading UI from being mistaken for Cancel.
             if(cancel==null && selectedNow>0) cancel=Detector.detectSelectionCancel(b);
             if(cancel==null)
                 throw new RuntimeException("fallback reset 無『取消』且無法證明安全的 zero-select in-place 切色；拒絕疊加下一方案");
@@ -1077,6 +1164,7 @@ public final class PilotController {
         if(m.contains("screenshot"))return "E_SCREENSHOT";
         if(m.contains("前往探險")||m.contains("cta"))return "E_CTA";
         if(m.contains("顏色圓圈")||m.contains("filter"))return "E_FILTER";
+        if(m.contains("roster still loading")||(m.contains("roster")&&m.contains("loading")))return "E_SELECTION_LOADING";
         if(m.contains("selection count")||m.contains("fallback reset")||m.contains("selection plans")||m.contains("selected/maximum"))return "E_SELECTION_STATE";
         if(m.contains("格線")||m.contains("pikmin grid"))return "E_PIKMIN_GRID";
         if(m.contains("go ")||m.startsWith("go")||m.contains("go未")||m.contains("go 未"))return "E_GO";
@@ -1222,7 +1310,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.1-alpha23 • sticky fallback cursor • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

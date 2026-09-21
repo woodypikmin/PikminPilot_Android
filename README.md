@@ -1,4 +1,82 @@
-# 0.4.3-alpha25 — bottom-clipped BUSY hardening
+# 0.4.6-alpha28 — pixel-first BUSY progress-rail guard
+
+This release fixes a concrete false-AVAILABLE case seen on a 912×2048 expedition screenshot: the middle-bottom green apple sits in a BUSY card whose header is `12分`. The previous detector only inspected the grey/red progress rail after OCR had recognized the duration text. If ML Kit missed or fragmented `12分`, the clearly visible BUSY rail was ignored.
+
+New behavior:
+- Before OCR-dependent BUSY checks, each fruit candidate is checked for a same-column progress rail directly above it.
+- The rail requires a long neutral-grey track plus a warm-red/pink filled prefix on the same scanline.
+- It is candidate-local and distance-bounded, so a BUSY card in another row/column cannot broadly suppress unrelated cargo.
+- OCR duration (`12分`, `17分`, `2小時`, etc.) remains a secondary signal, not the gate that unlocks rail detection.
+- Existing card-first BUSY/COMPLETE, clipped-card guards, fruit/seedling logic, sticky fallback, loading-safe GO, Green X, 24% list swipe and 3 s list settle are preserved.
+
+Diagnostic when this guard fires:
+
+```
+SKIP[BUSY_PROGRESS_RAIL] object @(x,y) col=N
+```
+
+## Changes
+
+- **搬運次數改為直接輸入數字**：不再固定 1 / 5 / 10 / 20 下拉選單。輸入 `0` 代表無限循環，可輸入 1～1,000,000。舊版 runMode 設定會自動遷移。
+- **中間列 BUSY 水果再加一層語意 guard**：若同欄水果上方出現 `17分`、`35分鐘`、`2小時`、`158日18小時` 等剩餘時間，且時間下方同時看到 BUSY 卡特有的長灰色 progress rail，直接判定為 BUSY，不依賴淡粉紅框一定被手機渲染出來。
+- **下方裁切卡仍保留 duration-only fallback**；上方只露下半張卡則仍以既有 pastel border / side rails / card geometry 為主，不用時間亂猜。
+- 花苗、sticky fallback、GO、Green X、24% list swipe、3000ms settle、loading-safe selection 都維持 alpha26。
+
+### New diagnostics
+
+```text
+SKIP[BUSY_DURATION_PROGRESS] object @(x,y) col=n
+SKIP[BUSY_DURATION_HEADER] object @(x,y) col=n
+SKIP[STATUS_CLIPPED_LOWER] object @(x,y) col=n
+```
+
+`BUSY_DURATION_PROGRESS` 是這版新增的主要保險：**duration 在上 + progress rail 在上方卡頭 = 不點**。
+
+# 0.4.4-alpha26 — generic BUSY duration + loading-safe GO gate
+
+This build is a minimal delta from 0.4.3-alpha25. Existing expedition scan, CTA, fallback colours, sticky cursor, strict GO, Green-X, 24% list swipe and 3-second list settle are preserved.
+
+## BUSY duration semantics
+
+For a **bottom-clipped carried card whose upper half is visible**, the semantic guard no longer assumes the header must be `N日 N小時`. Same-column duration-like OCR **above** the fruit can veto the candidate, including:
+
+- `158日18小時`
+- `2小時`
+- `35分鐘`
+- `7分`
+- `45秒`
+
+This is deliberately directional. AVAILABLE travel-duration text appears below normal cargo and is not used as BUSY evidence.
+
+For a **top-clipped card where only the lower half is visible**, the duration shortcut is not used; the existing BUSY/COMPLETE pastel border + side-rail / partial-card geometry remains authoritative.
+
+Diagnostic: `SKIP[BUSY_DURATION_HEADER]`.
+
+## Selection loading: taps allowed, fallback locked
+
+Some phones show hollow grey placeholder rings after a colour chip is tapped while Pikmin artwork is still loading. Loading is **not** evidence that the colour is exhausted. alpha26 therefore changes the state machine:
+
+```text
+filter tap
+→ placeholder rings may still be visible
+→ geometric Pikmin-slot taps are still allowed
+→ watch strict bottom-right GO
+→ while loading is visible: NO Cancel / NO Fallback
+→ after loading clears: require two stable non-loading frames
+→ if GO lights at any point: commit immediately
+```
+
+If queued taps were issued during loading but the page settles at `0/N` with GO still off, the app retries the **same plan once** on the stable grid before considering fallback. It does not cancel simply because loading was observed.
+
+There is also a minimum 3-second no-GO settle before insufficiency may trigger fallback. If loading persists for 12 seconds, the app fails closed without pressing Cancel or switching colour.
+
+If selected/maximum text is temporarily unreadable but the strict GO detector is clearly enabled, GO itself is treated as authoritative proof of a legal non-zero team.
+
+## Zero-selected fallback
+
+If a plan is genuinely insufficient with `selected=0`, GO absent, loading cleared, and the selection page still visible, there is nothing to clear. The existing zero-select in-place transition to the next fallback colour remains in use. Live selections (`selected>0`) still require a real reset before changing plan.
+
+# 0.4.4-alpha26 — bottom-clipped BUSY hardening
 
 This build is based directly on 0.4.2-alpha24. Selection fallback, GO, Green-X, 24% list swipe, 3s settle, exclusion-first fruit OCR, and sticky plan cursor are unchanged.
 
@@ -14,7 +92,7 @@ alpha25 adds two independent protections:
 New diagnostics include:
 
 ```text
-SKIP[BUSY_TIME_HEADER] object @(...) col=...
+SKIP[BUSY_DURATION_HEADER] object @(...) col=...
 SKIP[STATUS_CLIPPED_LOWER] object @(...) col=...
 CARGO EDGE VERIFY ⏳ ...
 CARGO EDGE VERIFY REJECTED ✅ ...

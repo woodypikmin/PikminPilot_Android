@@ -837,6 +837,75 @@ public final class Detector {
         return refined;
     }
 
+
+    /**
+     * Count hollow grey loading rings in the Pikmin roster.
+     *
+     * Some phones render the colour filter immediately while the Pikmin artwork
+     * is still loading. The placeholders are distinctive: many similarly-sized
+     * low-saturation hollow rings, with a bright/white centre, arranged below
+     * the filter row. Returning a count makes logs diagnostic and lets callers
+     * require several placeholders before declaring the roster "loading".
+     */
+    public static int selectionLoadingPlaceholderCount(Bitmap b) {
+        int w=b.getWidth(),h=b.getHeight();
+        RectF vp=activeContentRect(b);
+        float shortEdge=Math.max(1f,Math.min(vp.width(),vp.height()));
+        FilterRowGeometry row=detectFilterRowGeometry(b);
+        float y0=row!=null
+                ? row.y+Math.max(vp.height()*0.055f,shortEdge*0.065f)
+                : vp.top+vp.height()*0.28f;
+        float y1=vp.top+vp.height()*0.88f;
+        y0=Math.max(vp.top,y0);
+        y1=Math.min(vp.bottom,y1);
+        if(y1<=y0) return 0;
+
+        boolean[] mask=new boolean[w*h];
+        int ix0=Math.max(0,(int)Math.floor(vp.left));
+        int ix1=Math.min(w,(int)Math.ceil(vp.right));
+        int iy0=Math.max(0,(int)Math.floor(y0));
+        int iy1=Math.min(h,(int)Math.ceil(y1));
+        for(int y=iy0;y<iy1;y++) for(int x=ix0;x<ix1;x++) {
+            Hsv v=hsv(b.getPixel(x,y));
+            // Ring strokes are pale grey. Excluding near-white background keeps
+            // the connected component bounded to the ring itself.
+            if(v.s<=0.14 && v.v>=0.70 && v.v<=0.975) mask[y*w+x]=true;
+        }
+
+        int count=0;
+        for(Component c:components(mask,w,h)) {
+            float bw=c.rect.width(), bh=c.rect.height();
+            float wf=bw/shortEdge, hf=bh/shortEdge;
+            if(wf<0.035f||wf>0.095f||hf<0.035f||hf>0.095f) continue;
+            float aspect=bw/Math.max(1f,bh);
+            if(aspect<0.72f||aspect>1.38f) continue;
+            double fill=c.count/Math.max(1.0,bw*bh);
+            // A loading ring is hollow: enough stroke to be a ring, but nowhere
+            // near a filled Pikmin/decor body.
+            if(fill<0.10||fill>0.40) continue;
+
+            float cx=c.rect.centerX(), cy=c.rect.centerY();
+            float inner=Math.max(2f,Math.min(bw,bh)*0.24f);
+            int total=0,white=0;
+            int step=Math.max(1,(int)(shortEdge/700f));
+            int sx0=Math.max(0,(int)Math.floor(cx-inner));
+            int sx1=Math.min(w-1,(int)Math.ceil(cx+inner));
+            int sy0=Math.max(0,(int)Math.floor(cy-inner));
+            int sy1=Math.min(h-1,(int)Math.ceil(cy+inner));
+            float inner2=inner*inner;
+            for(int y=sy0;y<=sy1;y+=step) for(int x=sx0;x<=sx1;x+=step) {
+                float dx=x+0.5f-cx,dy=y+0.5f-cy;
+                if(dx*dx+dy*dy>inner2) continue;
+                Hsv v=hsv(b.getPixel(x,y));
+                total++;
+                if(v.s<=0.10&&v.v>=0.93) white++;
+            }
+            if(total<8 || (double)white/total<0.68) continue;
+            count++;
+        }
+        return count;
+    }
+
     /**
      * Adaptive 5x3 Pikmin grid whose TAP POINTS are geometric cell centres.
      *
@@ -848,6 +917,64 @@ public final class Detector {
      * Row discovery uses a trimmed five-column score (middle three values), so
      * one unusually large Decor in a row cannot dominate the row-Y estimate.
      */
+    /**
+     * Detect the pale circular placeholder rings shown while Pikmin sprites are
+     * still loading.  These rings are low-saturation, near-white annuli at the
+     * canonical 5-column selection slots.  Requiring several slots at once
+     * keeps white/rock Pikmin or isolated UI circles from looking like loading.
+     *
+     * This is a diagnostic / state-machine guard only: loading never means
+     * "insufficient Pikmin" and must never trigger Cancel/Fallback by itself.
+     */
+    public static boolean isSelectionGridLoading(Bitmap b) {
+        int w=b.getWidth(),h=b.getHeight();
+        RectF vp=activeContentRect(b);
+        double[] cols={0.129,0.313,0.492,0.672,0.849};
+        double aspect=vp.width()/Math.max(1,vp.height());
+        double t=Math.min(1,Math.max(0,(aspect-0.48)/(0.70-0.48)));
+        double[] phone={0.517,0.662},tablet={0.550,0.720};
+        double minDim=Math.max(1.0,Math.min(vp.width(),vp.height()));
+        double centerR=minDim*0.016;
+        double ring0=minDim*0.024, ring1=minDim*0.046;
+        int step=Math.max(2,(int)(minDim/260.0));
+        int ringSlots=0, checked=0;
+
+        for(int r=0;r<2;r++) {
+            double row=phone[r]+(tablet[r]-phone[r])*t;
+            int cy=(int)Math.round(vp.top+vp.height()*row);
+            for(double col:cols) {
+                int cx=(int)Math.round(vp.left+vp.width()*col);
+                if(cx-ring1<0||cx+ring1>=w||cy-ring1<0||cy+ring1>=h) continue;
+                checked++;
+                int centerN=0,centerWhite=0,ringN=0,ringGray=0,ringColor=0;
+                int rad=(int)Math.ceil(ring1);
+                for(int y=cy-rad;y<=cy+rad;y+=step) for(int x=cx-rad;x<=cx+rad;x+=step) {
+                    double dx=x-cx,dy=y-cy,d=Math.sqrt(dx*dx+dy*dy);
+                    if(d>ring1) continue;
+                    int color=b.getPixel(x,y);
+                    int rr=(color>>16)&255,gg=(color>>8)&255,bb=color&255;
+                    int mx=Math.max(rr,Math.max(gg,bb)),mn=Math.min(rr,Math.min(gg,bb));
+                    double bright=(rr+gg+bb)/765.0;
+                    double sat=(mx-mn)/Math.max(1.0,mx);
+                    if(d<=centerR) {
+                        centerN++;
+                        if(bright>=0.94&&sat<=0.10) centerWhite++;
+                    } else if(d>=ring0) {
+                        ringN++;
+                        if(bright>=0.55&&bright<=0.985&&sat<=0.14) ringGray++;
+                        if(sat>=0.22&&bright>=0.30) ringColor++;
+                    }
+                }
+                if(centerN==0||ringN==0) continue;
+                double white=centerWhite/(double)centerN;
+                double gray=ringGray/(double)ringN;
+                double color=ringColor/(double)ringN;
+                if(white>=0.72&&gray>=0.075&&color<=0.10) ringSlots++;
+            }
+        }
+        return checked>=5&&ringSlots>=3;
+    }
+
     public static List<PointF> detectPikminSelectionGrid(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight();
         RectF vp=activeContentRect(b);

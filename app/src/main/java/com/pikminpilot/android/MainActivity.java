@@ -13,6 +13,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.Spinner;
+import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -23,7 +24,7 @@ import com.pikminpilot.android.model.PilotConfig;
 public class MainActivity extends Activity implements PilotController.Listener {
     private TextView serviceStatus,runStatus,logView,speedBadge,cargoHint,speedHint,countTitle,countHint,pikminCountView;
     private TextView summaryRun,summaryCargo,summaryPikmin;
-    private Spinner runMode;
+    private EditText runCountInput;
     private Spinner fallback1Type,fallback2Type,fallback3Type,fallback1Count,fallback2Count,fallback3Count;
     private CheckBox fallback1Enabled,fallback2Enabled,fallback3Enabled;
     private Button cargoFruit,cargoSeedling,cargoBoth,typePink,typeWhite,typePurple,typeRock,speedStable,speedFast;
@@ -40,7 +41,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         speedBadge=findViewById(R.id.speedBadge); cargoHint=findViewById(R.id.cargoHint); speedHint=findViewById(R.id.speedHint);
         countTitle=findViewById(R.id.countTitle); countHint=findViewById(R.id.countHint); pikminCountView=findViewById(R.id.pikminCount);
         summaryRun=findViewById(R.id.summaryRun);summaryCargo=findViewById(R.id.summaryCargo);summaryPikmin=findViewById(R.id.summaryPikmin);
-        runMode=findViewById(R.id.runMode);
+        runCountInput=findViewById(R.id.runCountInput);
         fallback1Enabled=findViewById(R.id.fallback1Enabled); fallback2Enabled=findViewById(R.id.fallback2Enabled); fallback3Enabled=findViewById(R.id.fallback3Enabled);
         fallback1Type=findViewById(R.id.fallback1Type); fallback2Type=findViewById(R.id.fallback2Type); fallback3Type=findViewById(R.id.fallback3Type);
         fallback1Count=findViewById(R.id.fallback1Count); fallback2Count=findViewById(R.id.fallback2Count); fallback3Count=findViewById(R.id.fallback3Count);
@@ -48,12 +49,23 @@ public class MainActivity extends Activity implements PilotController.Listener {
         typePink=findViewById(R.id.typePink);typeWhite=findViewById(R.id.typeWhite);typePurple=findViewById(R.id.typePurple);typeRock=findViewById(R.id.typeRock);
         speedStable=findViewById(R.id.speedStable);speedFast=findViewById(R.id.speedFast);
 
-        String[] runItems={"1","5","10","20","∞"};
-        runMode.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,runItems));
-        runMode.setSelection(Math.max(0,Math.min(4,prefs.getInt("runMode",1))));
-        runMode.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
-            public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("runMode",pos).apply();refreshUi();}
-            public void onNothingSelected(android.widget.AdapterView<?> p){}
+        // Free-form run count: user can enter any non-negative integer.
+        // 0 means infinite. Migrate the old fixed Spinner once if needed.
+        int initialRuns;
+        if(prefs.contains("runCount")) initialRuns=Math.max(0,prefs.getInt("runCount",5));
+        else {
+            int oldMode=Math.max(0,Math.min(4,prefs.getInt("runMode",1)));
+            initialRuns=new int[]{1,5,10,20,0}[oldMode];
+            prefs.edit().putInt("runCount",initialRuns).apply();
+        }
+        runCountInput.setText(String.valueOf(initialRuns));
+        runCountInput.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence s,int start,int count,int after){}
+            public void onTextChanged(CharSequence s,int start,int before,int count){
+                Integer v=parseRunCount(false);
+                if(v!=null){prefs.edit().putInt("runCount",v).apply();refreshUi();}
+            }
+            public void afterTextChanged(android.text.Editable e){}
         });
 
         try{cargoMode=PilotConfig.CargoMode.valueOf(prefs.getString("cargo","FRUIT"));}catch(Exception ignored){}
@@ -78,9 +90,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.3-alpha25 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.6-alpha28 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.4.3-alpha25 • bottom BUSY header guard • edge 2-frame AVAILABLE ACK • sticky fallback cursor • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • free run-count input • loading-safe GO gate • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -127,17 +139,39 @@ public class MainActivity extends Activity implements PilotController.Listener {
         summaryPikmin.setText(PilotConfig.pikminName(pikminType)+"皮×"+pikminCount+(enabledFallbacks>0?" + F"+enabledFallbacks:""));
     }
 
-    private String runLabel(){int p=runMode==null?1:runMode.getSelectedItemPosition();return p==4?"無限循環":new String[]{"1 顆","5 顆","10 顆","20 顆","無限循環"}[p];}
-    private int runTarget(){int p=runMode.getSelectedItemPosition();return p==4?0:new int[]{1,5,10,20,0}[p];}
+    private Integer parseRunCount(boolean toastOnError){
+        if(runCountInput==null) return 5;
+        String raw=runCountInput.getText()==null?"":runCountInput.getText().toString().trim();
+        if(raw.isEmpty()){
+            if(toastOnError) Toast.makeText(this,"請輸入搬運次數；0 代表無限",Toast.LENGTH_LONG).show();
+            return null;
+        }
+        try{
+            long v=Long.parseLong(raw);
+            if(v<0||v>1000000L){
+                if(toastOnError) Toast.makeText(this,"搬運次數請輸入 0～1,000,000",Toast.LENGTH_LONG).show();
+                return null;
+            }
+            return (int)v;
+        }catch(NumberFormatException e){
+            if(toastOnError) Toast.makeText(this,"搬運次數格式不正確",Toast.LENGTH_LONG).show();
+            return null;
+        }
+    }
+    private String runLabel(){Integer v=parseRunCount(false);if(v==null)return "請輸入次數";return v==0?"無限循環":v+" 顆";}
+    private int runTarget(){Integer v=parseRunCount(false);return v==null?-1:v;}
     private void refreshService(){boolean on=PilotAccessibilityService.get()!=null;serviceStatus.setText(on?"Accessibility ✓":"Accessibility ! 尚未啟用");}
     private void openPikmin(){Intent i=getPackageManager().getLaunchIntentForPackage("com.nianticlabs.pikmin");if(i==null){Toast.makeText(this,"找不到 Pikmin Bloom (com.nianticlabs.pikmin)",Toast.LENGTH_LONG).show();return;}startActivity(i);}
     private void startPilot(){
         if(PilotAccessibilityService.get()==null){Toast.makeText(this,"請先啟用 Pikmin Pilot Automation 輔助使用服務",Toast.LENGTH_LONG).show();startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));return;}
+        Integer requestedRuns=parseRunCount(true);
+        if(requestedRuns==null) return;
+        prefs.edit().putInt("runCount",requestedRuns).apply();
         java.util.List<PilotConfig.SelectionPlan> fallbacks=new java.util.ArrayList<>();
         fallbacks.add(readFallback(1,fallback1Enabled,fallback1Type,fallback1Count));
         fallbacks.add(readFallback(2,fallback2Enabled,fallback2Type,fallback2Count));
         fallbacks.add(readFallback(3,fallback3Enabled,fallback3Type,fallback3Count));
-        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,runTarget(),fast,fallbacks);
+        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,requestedRuns,fast,fallbacks);
         appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount+" • fallbacks="+enabledFallbackSummary(cfg));
         openPikmin();
         // User workflow: leave Pikmin Bloom already open on the Expedition list,

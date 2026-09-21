@@ -107,14 +107,13 @@ public final class CargoDetector {
     );
 
     // A BUSY expedition card shows a remaining-return-time header above the
-    // carried cargo (for example "158日18小時"). This is useful cross-device
-    // evidence when the very pale pink/green border is shifted by display
-    // colour management or partly hidden by floating/system overlays.
-    // We intentionally require 日 + 小時/小时 and also constrain it spatially
-    // to the same column ABOVE a lower-edge candidate; normal AVAILABLE rows
-    // that merely show a travel duration below the item do not satisfy this.
+    // carried cargo. It may be long ("158日18小時") or very short ("7分",
+    // "35分鐘", "2小時"). Treat the *shape of a duration* as the semantic
+    // signal; do not require a specific 日+小時 pair. This remains spatially
+    // constrained to the same column ABOVE the candidate, so ordinary
+    // AVAILABLE travel-duration text below an item is not confused with BUSY.
     private static final Pattern BUSY_RETURN_TIME_PATTERN = Pattern.compile(
-            ".*\\d{1,4}[日曰]\\d{1,3}(?:小時|小时|時|时).*"
+            ".*\\d{1,4}(?:日|天|小時|時|分鐘|分|秒).*"
     );
 
     // Reuse one ML Kit recognizer for the lifetime of the process. Creating and
@@ -206,10 +205,28 @@ public final class CargoDetector {
             // directional test avoids the old bug where a BUSY card in the row
             // above blocked a different AVAILABLE item below it.
             boolean lowerBorderEvidence=hasBottomClippedStatusEvidence(b,tolerantStatusBands,col,center,navGuard.contentTopY);
+            // Strong semantic BUSY signature used on every row: a duration OCR
+            // ABOVE this candidate plus the long grey/red progress rail directly
+            // below that duration. This catches cards such as "17分", "2小時"
+            // even when a phone renders the pastel border too faintly. Direction
+            // alone is not enough because an AVAILABLE row above can also have a
+            // travel-time label; the progress rail is the disambiguator.
+            // Pixel-only BUSY rail guard. Do this BEFORE OCR-dependent duration
+            // parsing: on some phones ML Kit misses short headers such as "12分",
+            // while the grey progress track + red filled prefix is still visually
+            // unmistakable. A rail must be in the same expedition column and a
+            // plausible distance ABOVE this exact candidate.
+            boolean busyProgressRail=hasBusyProgressRailAboveCandidate(b,col,center,w,h,navGuard.contentTopY);
+            boolean busyDurationProgress=hasBusyDurationProgressAboveCandidate(b,ocr,col,center,w,h,navGuard.contentTopY);
+            // Lower-edge fallback: when the bottom of a card is clipped/covered,
+            // the progress rail may also be hidden. There a same-column duration
+            // ABOVE the candidate is sufficient secondary evidence.
             boolean busyTimeHeader=hasBusyReturnTimeHeaderAboveCandidate(ocr,col,center,w,h,navGuard.contentTopY);
-            if(lowerBorderEvidence || busyTimeHeader) {
-                diagnostics.add((busyTimeHeader?"SKIP[BUSY_TIME_HEADER]":"SKIP[STATUS_CLIPPED_LOWER]")+
-                        " object @("+Math.round(center.x)+","+Math.round(center.y)+") col="+col);
+            if(lowerBorderEvidence || busyProgressRail || busyDurationProgress || busyTimeHeader) {
+                String reason=busyProgressRail?"SKIP[BUSY_PROGRESS_RAIL]":
+                        (busyDurationProgress?"SKIP[BUSY_DURATION_PROGRESS]":
+                        (busyTimeHeader?"SKIP[BUSY_DURATION_HEADER]":"SKIP[STATUS_CLIPPED_LOWER]"));
+                diagnostics.add(reason+" object @("+Math.round(center.x)+","+Math.round(center.y)+") col="+col);
                 continue;
             }
             double expected=(col+0.5)*colWidth;
@@ -680,6 +697,128 @@ public final class CargoDetector {
     }
 
     /**
+     * OCR-independent BUSY-card progress detector.
+     *
+     * A carried expedition card renders a long neutral grey progress track with
+     * a short warm-red filled prefix above the Pikmin/cargo artwork.  The old
+     * path only checked this rail after ML Kit had successfully recognized the
+     * duration text.  Short labels such as "12分" are exactly where OCR can be
+     * flaky, so the most stable visual evidence was being ignored.
+     *
+     * This method deliberately requires BOTH pieces on the same scanline:
+     *   1) a long neutral grey run, and
+     *   2) a red/pink prefix near the left side of the same expedition column.
+     * It is also spatially tied to the exact candidate below it.  That keeps
+     * ordinary separators/card borders from becoming broad same-column blocks.
+     */
+    private static boolean hasBusyProgressRailAboveCandidate(Bitmap b,int col,PointF center,int w,int h,float contentTopY){
+        double cw=w/3.0;
+        int x0=Math.max(0,(int)(col*cw+cw*0.07));
+        int x1=Math.min(w-1,(int)((col+1)*cw-cw*0.07));
+        int y0=Math.max((int)contentTopY,(int)(center.y-h*0.105f));
+        int y1=Math.min(h-1,(int)(center.y-h*0.020f));
+        if(x1<=x0||y1<=y0) return false;
+
+        int span=x1-x0+1;
+        int needGrey=Math.max(28,(int)(span*0.38f));
+        int prefixEnd=Math.min(x1,x0+(int)(span*0.42f));
+        int needRed=Math.max(4,(int)(span*0.018f));
+
+        for(int y=y0;y<=y1;y++){
+            int longestGrey=0,greyRun=0,redCount=0;
+            for(int x=x0;x<=x1;x++){
+                int p=b.getPixel(x,y);
+                int r=(p>>16)&255,g=(p>>8)&255,bl=p&255;
+                int max=Math.max(r,Math.max(g,bl)),min=Math.min(r,Math.min(g,bl));
+                // Progress track: light neutral grey.  Allow a little more
+                // colour/brightness variance than the OCR-coupled detector to
+                // survive display colour management, but exclude white canvas.
+                boolean grey=(max-min<=18 && max>=170 && max<=252);
+                if(grey){
+                    greyRun++;
+                    if(greyRun>longestGrey) longestGrey=greyRun;
+                } else greyRun=0;
+
+                if(x<=prefixEnd){
+                    // Filled prefix is warm red/pink.  Keep this broad enough
+                    // for different Android colour pipelines without accepting
+                    // yellow/orange cargo artwork.
+                    boolean warmRed=(r>=205 && g>=45 && g<=175 && bl>=45 && bl<=180 && r-g>=45 && r-bl>=35);
+                    if(warmRed) redCount++;
+                }
+            }
+            if(longestGrey>=needGrey && redCount>=needRed) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Device-independent BUSY signature for fully/partially visible cards.
+     * A carried card places a remaining-duration header (e.g. 17分, 35分鐘,
+     * 2小時, 158日18小時) ABOVE its cargo and a long horizontal progress rail
+     * immediately below the duration.  Requiring both pieces lets us use this
+     * on middle rows too without confusing the ordinary travel-time text shown
+     * BELOW an AVAILABLE expedition item.
+     */
+    private static boolean hasBusyDurationProgressAboveCandidate(Bitmap b,List<OcrItem> ocr,int col,PointF center,int w,int h,float contentTopY){
+        float cw=w/3f;
+        float x0=col*cw, x1=(col+1)*cw;
+        float minY=Math.max(contentTopY,center.y-h*0.165f);
+        float maxY=center.y-h*0.018f;
+        for(OcrItem item:ocr){
+            float cx=item.rect.centerX(), cy=item.rect.centerY();
+            if(cx<x0||cx>x1||cy<minY||cy>maxY) continue;
+            String n=normalizeDurationText(item.text);
+            if(!looksLikeDuration(n)) continue;
+            float delta=center.y-cy;
+            if(delta<h*0.028f||delta>h*0.155f) continue;
+            if(hasProgressRailBelowDuration(b,item.rect,col,center.y,w,h)) return true;
+        }
+        return false;
+    }
+
+    private static String normalizeDurationText(String text){
+        return normalize(text)
+                .replace("小时","小時")
+                .replace("分钟","分鐘")
+                .replace("时","時")
+                .replace("曰","日");
+    }
+
+    private static boolean looksLikeDuration(String n){
+        if(n==null||n.isEmpty()||n.length()>24) return false;
+        if(BUSY_RETURN_TIME_PATTERN.matcher(n).matches()) return true;
+        // OCR sometimes drops the digits but keeps an unambiguous multi-glyph unit.
+        if(n.contains("小時")||n.contains("分鐘")) return true;
+        return (n.contains("日")||n.contains("天")) && (n.contains("時")||n.contains("分"));
+    }
+
+    private static boolean hasProgressRailBelowDuration(Bitmap b,RectF durationRect,int col,float candidateY,int w,int h){
+        double cw=w/3.0;
+        int x0=Math.max(0,(int)(col*cw+cw*0.07));
+        int x1=Math.min(w-1,(int)((col+1)*cw-cw*0.07));
+        int y0=Math.max(0,(int)(durationRect.bottom+h*0.004f));
+        int y1=Math.min(h-1,(int)Math.min(candidateY-h*0.012f,durationRect.bottom+h*0.060f));
+        if(x1<=x0||y1<=y0) return false;
+        int span=x1-x0+1;
+        int need=Math.max(18,(int)(span*0.40f));
+        for(int y=y0;y<=y1;y++){
+            int longest=0,run=0;
+            for(int x=x0;x<=x1;x++){
+                int p=b.getPixel(x,y);
+                int r=(p>>16)&255,g=(p>>8)&255,bl=p&255;
+                int max=Math.max(r,Math.max(g,bl)),min=Math.min(r,Math.min(g,bl));
+                // The unfilled track is a long neutral light-grey line. Keep
+                // pure/near-white background out by capping brightness at 249.
+                boolean grey=(max-min<=12 && max>=185 && max<=249);
+                if(grey){run++;if(run>longest)longest=run;}else run=0;
+            }
+            if(longest>=need) return true;
+        }
+        return false;
+    }
+
+    /**
      * BUSY-card semantic guard for lower-edge candidates. The remaining-time
      * header sits ABOVE the carried fruit inside the bordered status card, while
      * normal AVAILABLE travel-time text is rendered below the cargo/location.
@@ -687,24 +826,20 @@ public final class CargoDetector {
      * rail or a phone shifts the pastel border outside the RGB tolerance.
      */
     private static boolean hasBusyReturnTimeHeaderAboveCandidate(List<OcrItem> ocr,int col,PointF center,int w,int h,float contentTopY){
+        // This semantic fallback is intentionally limited to lower-edge cargo,
+        // where a clipped BUSY card can lose its bottom/side rails. Elsewhere
+        // normal AVAILABLE rows can have their own travel-duration text near
+        // adjacent rows, so the full card detector remains authoritative.
         if(center.y<Math.max(contentTopY+h*0.20f,h*0.72f)) return false;
         float cw=w/3f;
         float x0=col*cw, x1=(col+1)*cw;
-        float minY=Math.max(contentTopY,center.y-h*0.205f);
-        float maxY=center.y-h*0.035f;
+        float minY=Math.max(contentTopY,center.y-h*0.220f);
+        float maxY=center.y-h*0.025f;
         for(OcrItem item:ocr){
             float cx=item.rect.centerX(), cy=item.rect.centerY();
             if(cx<x0||cx>x1||cy<minY||cy>maxY) continue;
-            String n=normalize(item.text)
-                    .replace("小时","小時")
-                    .replace("时","時")
-                    .replace("曰","日");
-            if(n.length()>24) continue;
-            boolean explicit=BUSY_RETURN_TIME_PATTERN.matcher(n).matches();
-            // ML Kit occasionally loses one or more digits but preserves both
-            // semantic units. Keep this fallback spatially constrained.
-            boolean unitPair=n.contains("日")&&n.contains("小時");
-            if(explicit||unitPair) return true;
+            String n=normalizeDurationText(item.text);
+            if(looksLikeDuration(n)) return true;
         }
         return false;
     }
