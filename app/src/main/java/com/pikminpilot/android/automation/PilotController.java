@@ -94,7 +94,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.9-alpha21 • GO-enabled commit • strict bottom-right GO • top+bottom clipped BUSY guard • fallback 岩/紫/粉/白");
+            emit("BUILD 0.4.0-alpha22 • zero-select in-place fallback • candidate-local clipped BUSY guard • strict bottom-right GO • fallback 岩/紫/粉/白");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -629,12 +629,12 @@ public final class PilotController {
             emit("SELECTION FALLBACK • "+plan.name+" insufficient after bounded GO reconcile • GO NOT SENT"+
                     " • selected="+finalObserved.selected+"/"+finalObserved.maximum+" • effective-required="+finalEffective);
             if(pi+1<plans.size()){
-                cancelAndResetSelection(cfg,round,kind,finalObserved.maximum);
+                cancelAndResetSelection(cfg,round,kind,finalObserved);
                 continue;
             }
 
             emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT");
-            cancelAndResetSelection(cfg,round,kind,finalObserved.maximum);
+            cancelAndResetSelection(cfg,round,kind,finalObserved);
             returnToExpeditionListAfterSelectionFailure(cfg,round);
             return new SelectionCommit(false,plan.name);
         }
@@ -697,16 +697,53 @@ public final class PilotController {
         return new GoReconcileResult(null,observed);
     }
 
-    private void cancelAndResetSelection(PilotConfig cfg,int round,CargoDetector.Kind kind,int priorMaximum)throws Exception{
+    private void cancelAndResetSelection(PilotConfig cfg,int round,CargoDetector.Kind kind,SelectionObservedNow priorObserved)throws Exception{
         // Must remain pre-GO. This method is never called after GO SENT.
         for(int attempt=1;attempt<=2&&running.get();attempt++){
             Bitmap b=shot();
             java.util.List<CargoDetector.OcrItem> ocr;
             try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
             if(CargoDetector.hasBusyToast(ocr)) emit("SELECTION DIAG • transient『似乎很忙』toast seen • diagnostic only");
+            // OCR text is the authoritative Cancel proof.  In the zero-select
+            // state the lower-left control is often a round BACK arrow, so do
+            // not run the broad visual Cancel detector until after the safe
+            // zero-select/no-Cancel bypass has been considered.
             PointF cancel=CargoDetector.cancelPoint(ocr);
-            if(cancel==null) cancel=Detector.detectSelectionCancel(b);
-            if(cancel==null) throw new RuntimeException("fallback reset 無法辨識左下『取消』");
+
+            // Zero-select special case: when this colour has literally no
+            // selectable Pikmin, Pikmin Bloom shows neither an enabled GO nor
+            // the lower-left 「取消」 pill (the lower-left control may instead
+            // be a simple back arrow).  There is nothing to clear, so pressing
+            // a guessed control is both unnecessary and dangerous.  Prove we
+            // are still on the selection page, prove GO is absent, and switch
+            // the next fallback colour in-place.
+            PointF goNow=Detector.detectActiveGo(b);
+            Detector.FilterRowGeometry rowNow=Detector.detectFilterRowGeometry(b);
+            boolean selectionVisible=rowNow!=null || CargoDetector.hasSelectionHeader(ocr);
+            int selectedNow=priorObserved==null?-1:priorObserved.selected;
+            if(cancel==null && selectedNow!=0){
+                // One quick truth-source reread handles a stale prior counter.
+                SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
+                if(reread!=null) selectedNow=reread.selected;
+            }
+            if(cancel==null && SelectionPolicy.canSwitchFallbackInPlace(selectedNow,goNow!=null,false,selectionVisible)){
+                emit("SELECTION RESET BYPASS ✅ • selected=0 • GO absent • no Cancel • lower-left back arrow untouched • switch fallback colour in-place");
+                return;
+            }
+
+            // Only a state with something selected is allowed to use the visual
+            // Cancel-shape fallback.  This prevents the empty-selection BACK
+            // arrow from ever being mistaken for Cancel.
+            if(cancel==null && selectedNow>0) cancel=Detector.detectSelectionCancel(b);
+            if(cancel==null)
+                throw new RuntimeException("fallback reset 無『取消』且無法證明安全的 zero-select in-place 切色；拒絕疊加下一方案");
+
+            // If GO is actually enabled, fallback must never proceed: GO is a
+            // non-idempotent commit and the caller should have committed it in
+            // reconcileGoPreCommit(). Fail closed rather than cancelling a legal
+            // team due to a transient state mismatch.
+            if(goNow!=null) throw new RuntimeException("fallback reset 前 GO 已亮；拒絕取消合法隊伍");
+
             tapMapped(b,cancel.x,cancel.y,70,"SELECTION CANCEL");
             sleep(cfg.fast?320:520);
 
@@ -1049,7 +1086,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.9-alpha21 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.0-alpha22 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

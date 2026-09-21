@@ -22,4 +22,14 @@ public final class SelectionPolicy {
         return selected<effectiveRequired(configuredCount,liveMaximum)
                 ?Decision.FALLBACK:Decision.GO_RECOVERY;
     }
+    /**
+     * Safe in-place fallback transition used when Pikmin Bloom shows no Cancel
+     * button because the current colour has zero selectable Pikmin.  Never use
+     * this path with a live selection or an enabled GO; otherwise changing the
+     * colour filter could stack plans or race a commit.
+     */
+    public static boolean canSwitchFallbackInPlace(int selected,boolean goEnabled,boolean cancelVisible,boolean selectionPageVisible){
+        return selected==0 && !goEnabled && !cancelVisible && selectionPageVisible;
+    }
+
 }

@@ -32,4 +32,20 @@ public class SelectionPolicyTest {
     @Test public void countSatisfiedButGoMissing_isGoRecoveryNotFallback(){
         assertEquals(SelectionPolicy.Decision.GO_RECOVERY,SelectionPolicy.decision(2,6,2,false));
     }
+    @Test public void zeroSelected_noGo_noCancel_selectionVisible_canSwitchFallbackInPlace(){
+        assertTrue(SelectionPolicy.canSwitchFallbackInPlace(0,false,false,true));
+    }
+    @Test public void selectedPikmin_neverSwitchesFallbackInPlaceWithoutReset(){
+        assertFalse(SelectionPolicy.canSwitchFallbackInPlace(1,false,false,true));
+    }
+    @Test public void enabledGo_neverSwitchesFallbackInPlace(){
+        assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,true,false,true));
+    }
+    @Test public void visibleCancel_usesNormalResetInsteadOfInPlaceSwitch(){
+        assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,false,true,true));
+    }
+    @Test public void missingSelectionPage_neverSwitchesFallbackInPlace(){
+        assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,false,false,false));
+    }
+
 }

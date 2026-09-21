@@ -1,4 +1,4 @@
-# Android 0.3.9-alpha21 reliability note
+# Android 0.4.0-alpha22 reliability note
 
 This release is a minimal delta from alpha20 and targets three field failures shown in real screenshots.
 
@@ -31,3 +31,5 @@ but it is used only after bounded GO reconcile when GO is still absent:
 - GO absent + selected >= effectiveRequired => GO/UI recovery problem, not fallback
 
 Fallback reset, no-stacking guarantees, busy-toast diagnostic behavior, and one-shot GO commit safety are unchanged. Fallback UI choices are limited to 岩 / 紫 / 粉紅 / 白.
+
+- alpha22: lower-edge BUSY protection now has candidate-local directional rail proof; selection fallback may switch colour in-place only for proven zero-selection + GO absent + no Cancel.

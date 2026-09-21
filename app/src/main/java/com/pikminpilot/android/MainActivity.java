@@ -78,9 +78,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.9-alpha21 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.0-alpha22 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.3.9-alpha21 • GO-enabled commit • top+bottom clipped BUSY guard • fallback 岩/紫/粉/白 • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.4.0-alpha22 • zero-select in-place fallback • candidate-local clipped BUSY guard • fallback 岩/紫/粉/白 • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}

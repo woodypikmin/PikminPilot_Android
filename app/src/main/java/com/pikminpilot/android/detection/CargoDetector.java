@@ -131,25 +131,26 @@ public final class CargoDetector {
         List<OcrItem> ocr=recognize(b);
         NavGuard navGuard=detectExpeditionNavGuard(ocr,w,h);
         List<Band> rawStatusBands=horizontalBands(b);
+        List<Band> tolerantStatusBands=horizontalBandsTolerant(b);
         List<StatusCard> cards=detectStatusCards(b,rawStatusBands);
         // Android screenshots can shift the very pale BUSY/COMPLETE border by a
         // few RGB values depending on device colour management. Merge a second,
         // slightly tolerant border pass, but only when it reconstructs a real
         // paired/partial card shape. This is safer than simply lowering every
         // pixel threshold and avoids both duplicate dispatches and broad false blocks.
-        mergeStatusCards(cards,detectStatusCardsTolerant(b));
+        mergeStatusCards(cards,detectStatusCardsTolerant(b,tolerantStatusBands));
         // A carried item can be clipped by the top navigation sheet. In that case
         // the top border is off-screen, so a full paired-card detector cannot fire.
         // Recover ONLY top-clipped cards by requiring a tolerant bottom border plus
         // real vertical side rails from the dynamic contentTopY down to that border.
         // The recovered rectangle stops at the border, so nearby AVAILABLE rows
         // below it are never blocked merely for sharing the same column.
-        List<StatusCard> topClippedCards=detectTopClippedStatusCardsTolerant(b,navGuard.contentTopY);
+        List<StatusCard> topClippedCards=detectTopClippedStatusCardsTolerant(b,navGuard.contentTopY,tolerantStatusBands);
         mergeStatusCards(cards,topClippedCards);
         // Symmetric protection for the bottom edge. A BUSY/COMPLETE card can
         // enter from below with only its TOP border visible. Without this guard,
         // the fruit artwork inside that clipped card can look AVAILABLE.
-        List<StatusCard> bottomClippedCards=detectBottomClippedStatusCardsTolerant(b,navGuard.contentTopY);
+        List<StatusCard> bottomClippedCards=detectBottomClippedStatusCardsTolerant(b,navGuard.contentTopY,tolerantStatusBands);
         mergeStatusCards(cards,bottomClippedCards);
         List<String> diagnostics=new ArrayList<>();
         diagnostics.add((navGuard.proven?"NAV-GUARD[OK] ":"NAV-GUARD[MISS] ")+
@@ -185,6 +186,18 @@ public final class CargoDetector {
                 continue;
             }
             int col=Math.min(2,Math.max(0,(int)(center.x/colWidth)));
+            // Candidate-local lower-edge safety net.  Some phones crop the
+            // bottom of a BUSY card under the navigation/overlay area so the
+            // global card reconstruction can miss the card even though its
+            // pastel top border and descending side rail are visible.  Only
+            // reject when the status border is ABOVE this exact candidate and
+            // the rail evidence continues downward toward the candidate.  This
+            // directional test avoids the old bug where a BUSY card in the row
+            // above blocked a different AVAILABLE item below it.
+            if(hasBottomClippedStatusEvidence(b,tolerantStatusBands,col,center,navGuard.contentTopY)) {
+                diagnostics.add("SKIP[STATUS_CLIPPED_LOWER] object @("+Math.round(center.x)+","+Math.round(center.y)+") col="+col);
+                continue;
+            }
             double expected=(col+0.5)*colWidth;
             if(Math.abs(center.x-expected)>colWidth*0.30) continue;
 
@@ -688,9 +701,8 @@ public final class CargoDetector {
         base.sort(Comparator.comparingDouble(c->c.rect.top));
     }
 
-    private static List<StatusCard> detectTopClippedStatusCardsTolerant(Bitmap b,float contentTopY){
+    private static List<StatusCard> detectTopClippedStatusCardsTolerant(Bitmap b,float contentTopY,List<Band> bands){
         int w=b.getWidth(),h=b.getHeight();
-        List<Band> bands=horizontalBandsTolerant(b);
         List<StatusCard> out=new ArrayList<>();
         float maxBottom=contentTopY+h*0.22f;
         for(Band band:bands){
@@ -721,9 +733,8 @@ public final class CargoDetector {
      * activate this guard in the lower part of the screen and require the top
      * border plus rails that continue toward the physical bottom edge.
      */
-    private static List<StatusCard> detectBottomClippedStatusCardsTolerant(Bitmap b,float contentTopY){
+    private static List<StatusCard> detectBottomClippedStatusCardsTolerant(Bitmap b,float contentTopY,List<Band> bands){
         int w=b.getWidth(),h=b.getHeight();
-        List<Band> bands=horizontalBandsTolerant(b);
         List<StatusCard> out=new ArrayList<>();
         float minTop=Math.max(contentTopY+h*0.18f,h*0.68f);
         for(Band band:bands){
@@ -749,6 +760,58 @@ public final class CargoDetector {
             }
         }
         return out;
+    }
+
+    /**
+     * Local proof that a candidate belongs to a BUSY/COMPLETE card whose lower
+     * half is clipped by the screenshot.  A status band alone is NOT enough:
+     * the side rail must continue below that band toward this candidate, and
+     * downward rail evidence must be stronger than the rail above the band.
+     * This keeps the guard local to the clipped card instead of poisoning the
+     * whole column.
+     */
+    private static boolean hasBottomClippedStatusEvidence(Bitmap b,List<Band> bands,int col,PointF center,float contentTopY){
+        int h=b.getHeight();
+        if(center.y<Math.max(contentTopY+h*0.20f,h*0.72f)) return false;
+        for(Band band:bands){
+            if(band.col!=col) continue;
+            float by=(float)band.center();
+            if(by>=center.y) continue;
+            float delta=center.y-by;
+            if(delta<h*0.018f||delta>h*0.185f) continue;
+
+            // If there is a normal matching bottom border below this band, this
+            // is a full card and the ordinary card detector owns it.
+            boolean paired=false;
+            for(Band other:bands){
+                if(other==band||other.col!=col||other.state!=band.state) continue;
+                float d=(float)(other.center()-band.center());
+                if(d>=h*0.095f&&d<=h*0.185f){ paired=true; break; }
+            }
+            if(paired) continue;
+
+            int down0=Math.min(h-2,band.y1+2);
+            int down1=Math.min(h-2,(int)Math.max(center.y+h*0.035f,by+h*0.075f));
+            int up1=Math.max(1,band.y0-2);
+            int up0=Math.max(0,up1-(int)(h*0.090f));
+            if(down1<=down0) continue;
+            int[] down=verticalRailRowsTolerant(b,band.state,col,down0,down1);
+            int[] up=verticalRailRowsTolerant(b,band.state,col,up0,up1);
+
+            int downStrong=Math.max(down[0],down[1]);
+            int upStrong=Math.max(up[0],up[1]);
+            int downNeed=Math.max(10,(int)((down1-down0)*0.16f));
+
+            int near0=Math.max(down0,(int)(center.y-h*0.050f));
+            int near1=Math.min(h-2,(int)(center.y+h*0.045f));
+            int[] near=verticalRailRowsTolerant(b,band.state,col,near0,near1);
+            int nearStrong=Math.max(near[0],near[1]);
+
+            boolean descendsTowardCandidate=downStrong>=downNeed && nearStrong>=Math.max(2,(int)(h*0.0025f));
+            boolean directional=downStrong>=upStrong+Math.max(3,(int)(h*0.004f)) || by>=h*0.82f;
+            if(descendsTowardCandidate&&directional) return true;
+        }
+        return false;
     }
 
     /** Return {leftRailRows,rightRailRows} for tolerant BUSY/COMPLETE side rails. */
@@ -798,9 +861,8 @@ public final class CargoDetector {
      * card height, which keeps the looser colour range from blocking ordinary
      * expedition artwork.
      */
-    private static List<StatusCard> detectStatusCardsTolerant(Bitmap b){
+    private static List<StatusCard> detectStatusCardsTolerant(Bitmap b,List<Band> bands){
         int w=b.getWidth(),h=b.getHeight();
-        List<Band> bands=horizontalBandsTolerant(b);
         List<StatusCard> cards=new ArrayList<>();
         for(CardState state:new CardState[]{CardState.BUSY,CardState.COMPLETE}) for(int col=0;col<3;col++){
             List<Band> local=new ArrayList<>();
