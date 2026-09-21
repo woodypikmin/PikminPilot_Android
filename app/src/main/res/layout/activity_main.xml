@@ -68,7 +68,7 @@
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:gravity="center_vertical">
                     <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
                         <TextView android:id="@+id/countTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="每輪 粉紅皮克敏" android:textStyle="bold"/>
-                        <TextView android:id="@+id/countHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="最低 6 隻；每次 Run 固定同一數量" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+                        <TextView android:id="@+id/countHint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="設定目標數量；若遊戲已亮 GO，接受較少但可出發的隊伍" android:textColor="@color/text_secondary" android:textSize="12sp"/>
                     </LinearLayout>
                     <Button android:id="@+id/countMinus" android:layout_width="42dp" android:layout_height="42dp" android:text="−" android:textSize="20sp" android:background="@drawable/button_unselected"/>
                     <TextView android:id="@+id/pikminCount" android:layout_width="64dp" android:layout_height="42dp" android:gravity="center" android:text="12 隻" android:textStyle="bold" android:textSize="18sp"/>
@@ -79,7 +79,7 @@
 
                 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="皮克敏備選方案" android:textStyle="bold" android:textSize="15sp"/>
                 <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp"
-                    android:text="Primary 不足時才依序使用；每次 fallback 會先取消並清空上一組已選皮克敏。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
+                    android:text="Primary GO 未亮且確認不足時才依序使用；GO 已亮就直接出發。每次 fallback 先取消並清空上一組。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
 
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center_vertical">
                     <CheckBox android:id="@+id/fallback1Enabled" android:layout_width="wrap_content" android:layout_height="48dp" android:text="F1"/>

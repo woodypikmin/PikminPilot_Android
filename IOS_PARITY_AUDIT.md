@@ -1,28 +1,33 @@
-# Android 0.3.8-alpha20 reliability note
+# Android 0.3.9-alpha21 reliability note
 
-This release intentionally changes only fruit classification and GO targeting.
+This release is a minimal delta from alpha20 and targets three field failures shown in real screenshots.
 
-- GO: Android had drifted from iOS `detectActiveGO` to an overly broad x>=0.42/y>=0.58 search. alpha19 restores the iOS x>=0.60/y>=0.76 lower-right ROI and adds a centre guard, preventing the middle-bottom drone from being tapped as GO.
-- Fruit: the positive fruit-name dictionary remains for diagnostics only. Classification is now exclusion-first: AVAILABLE visual object + non-empty OCR => FRUIT unless the label is seedling/gift/postcard text. This directly tolerates OCR such as 檸樣, 責蘋果, 貴蘋果, or previously unseen fruit names.
-- Seedling detection was not changed.
+## 1. Bottom-clipped carried fruit
 
-This build keeps the alpha17 gameplay detectors and changes only two failure modes observed in field logs:
+alpha20 already recovered top-clipped BUSY/COMPLETE cards. alpha21 adds the symmetric lower-edge case: a carried card whose bottom is outside the screenshot may expose only its top pastel border and one or two side rails. The recovered blocked rectangle starts at that top status border and extends only to the screenshot bottom, so AVAILABLE rows above remain untouched.
 
-1. temporary Android AccessibilityService teardown no longer terminates the Pilot run; it pauses and resumes on rebind within the same process;
-2. Android ML Kit lemon OCR variants (`檸樣`, `樟樣`) are repaired only after a fruit visual component has already been associated with that list cell.
+## 2. GO versus drone
 
-No list-swipe, filter-row, Pikmin-grid, GO or Green-X geometry was changed in this build.
-## 0.3.8-alpha20 selection fallback delta
+GO is treated as a non-idempotent action. The enabled detector now requires:
 
-This version intentionally changes only the selection/commit layer plus two safety detectors:
+- physical screenshot bottom-right position (not only active-content normalized position),
+- large orange/red/peach component geometry, and
+- white glyph evidence inside the component.
 
-- Primary + 3 optional fallback plans.
-- `selected/maximum` truth model and `effectiveRequired=min(configured, maximum)`.
-- UI-tree first, OCR second for selection count.
-- busy toast diagnostic only.
-- Cancel/reset before switching plans; never stack selections.
-- GO requires satisfied count + strict lower-right orange/red GO proof.
-- no GO retry after commit.
-- top-clipped BUSY/COMPLETE card reconstruction for carried fruit at the upper viewport edge.
+This excludes the centre-bottom drone/control even when it lights at the same time.
 
-The existing Expedition list navigation, 24% list swipe, 3s settle, CTA transition, canonical colour lattice, Pikmin grid, Green-X, and return-to-list transport flow are otherwise retained.
+## 3. Selection fallback semantics
+
+The game can enable GO with fewer Pikmin than the configured target or displayed maximum. Therefore an enabled GO is now authoritative dispatchability evidence as long as at least one Pikmin is selected.
+
+The count model remains:
+
+`effectiveRequired = min(configuredCount, liveMaximum)`
+
+but it is used only after bounded GO reconcile when GO is still absent:
+
+- GO enabled + selected > 0 => commit, even if selected < effectiveRequired
+- GO absent + selected < effectiveRequired => fallback
+- GO absent + selected >= effectiveRequired => GO/UI recovery problem, not fallback
+
+Fallback reset, no-stacking guarantees, busy-toast diagnostic behavior, and one-shot GO commit safety are unchanged. Fallback UI choices are limited to 岩 / 紫 / 粉紅 / 白.

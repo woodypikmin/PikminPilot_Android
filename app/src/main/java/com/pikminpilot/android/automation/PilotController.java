@@ -94,7 +94,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.3.8-alpha20 • selection fallback state machine • strict orange-red GO • top-clipped BUSY guard • accessibility auto-resume");
+            emit("BUILD 0.3.9-alpha21 • GO-enabled commit • strict bottom-right GO • top+bottom clipped BUSY guard • fallback 岩/紫/粉/白");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -555,14 +555,16 @@ public final class PilotController {
         final String source;
         SelectionObservedNow(int selected,int maximum,String source){this.selected=selected;this.maximum=maximum;this.source=source;}
     }
-    private static final class SelectionBecameInsufficientException extends Exception {
+    private static final class GoReconcileResult {
+        final PointAndBitmap go;
         final SelectionObservedNow observed;
-        SelectionBecameInsufficientException(SelectionObservedNow observed){super("selection count became insufficient before GO");this.observed=observed;}
+        GoReconcileResult(PointAndBitmap go,SelectionObservedNow observed){this.go=go;this.observed=observed;}
     }
 
     /**
-     * Pre-GO selection fallback chain.  The live selected/maximum counter is the
-     * source of truth; the transient "似乎很忙" toast is diagnostic only.
+     * Pre-GO selection fallback chain. selected/maximum describes the live team,
+     * while an enabled GO is authoritative proof that the game accepts that team.
+     * The transient "似乎很忙" toast remains diagnostic only.
      */
     private SelectionCommit runSelectionPlans(PilotConfig cfg,int round,CargoDetector.Kind kind)throws Exception{
         java.util.List<PilotConfig.SelectionPlan> plans=new java.util.ArrayList<>();
@@ -592,39 +594,49 @@ public final class PilotController {
                     " • configured="+plan.configuredCount+" • effective-required="+effective+
                     " • source="+observed.source);
 
-            if(observed.selected<effective){
-                emit("SELECTION FALLBACK • "+plan.name+" insufficient • GO NOT SENT");
-                if(pi+1<plans.size()){
-                    cancelAndResetSelection(cfg,round,kind,observed.maximum);
-                    continue;
+            // IMPORTANT: do NOT fallback merely because selected < configured/effective.
+            // Pikmin Bloom can enable GO with a smaller legal team (e.g. 4/12).
+            // The enabled GO is authoritative dispatchability evidence. First do
+            // a bounded GO reconcile; only if GO stays absent do counts decide
+            // whether this is a real insufficiency or a GO/UI recovery problem.
+            stage("GO","第 "+round+" 輪："+plan.name+" • 確認 GO");
+            GoReconcileResult reconciled=reconcileGoPreCommit(cfg,plan,observed);
+            SelectionObservedNow finalObserved=reconciled.observed==null?observed:reconciled.observed;
+            int finalEffective=SelectionPolicy.effectiveRequired(plan.configuredCount,finalObserved.maximum);
+
+            if(reconciled.go!=null){
+                SelectionPolicy.Decision d=SelectionPolicy.decision(finalObserved.selected,plan.configuredCount,finalObserved.maximum,true);
+                if(d==SelectionPolicy.Decision.COMMIT_GO){
+                    if(finalObserved.selected<finalEffective){
+                        emit("SELECTION GO-OVERRIDE ✅ • GO enabled with selected="+finalObserved.selected+"/"+finalObserved.maximum+
+                                " below configured/effective="+finalEffective+" • accept game's legal team");
+                    }
+                    emit("SELECTION COMMIT ✅ • "+plan.name+" • selected="+finalObserved.selected+"/"+finalObserved.maximum+
+                            " • effective-required="+finalEffective+" • GO enabled");
+                    // Non-idempotent: exactly one GO tap. Never blind retry after this line.
+                    tapMapped(reconciled.go.b,reconciled.go.p.x,reconciled.go.p.y,55,"GO COMMIT "+plan.name);
+                    emit("GO SENT ✅ • plan="+plan.name+" • non-idempotent commit; no blind retry");
+                    return new SelectionCommit(true,plan.name);
                 }
-                emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT");
-                cancelAndResetSelection(cfg,round,kind,observed.maximum);
-                returnToExpeditionListAfterSelectionFailure(cfg,round);
-                return new SelectionCommit(false,plan.name);
+                emit("GO CANDIDATE REJECTED ⚠️ • selected=0; refusing non-idempotent commit");
             }
 
-            stage("GO","第 "+round+" 輪："+plan.name+" • 確認 GO");
-            PointAndBitmap go;
-            try{
-                go=reconcileGoPreCommit(cfg,plan,observed,effective);
-            }catch(SelectionBecameInsufficientException changed){
-                emit("SELECTION FALLBACK • "+plan.name+" became insufficient during GO reconcile • GO NOT SENT");
-                if(pi+1<plans.size()){
-                    cancelAndResetSelection(cfg,round,kind,changed.observed.maximum);
-                    continue;
-                }
-                cancelAndResetSelection(cfg,round,kind,changed.observed.maximum);
-                returnToExpeditionListAfterSelectionFailure(cfg,round);
-                return new SelectionCommit(false,plan.name);
+            SelectionPolicy.Decision decision=SelectionPolicy.decision(finalObserved.selected,plan.configuredCount,finalObserved.maximum,false);
+            if(decision==SelectionPolicy.Decision.GO_RECOVERY){
+                throw new RuntimeException("GO/UI state recovery failed while selection count remained satisfied");
             }
-            if(go==null) throw new RuntimeException("GO/UI state recovery failed while selection count remained satisfied");
-            emit("SELECTION COMMIT ✅ • "+plan.name+" • selected="+observed.selected+"/"+observed.maximum+
-                    " • effective-required="+effective+" • GO enabled");
-            // Non-idempotent: exactly one GO tap. Never blind retry after this line.
-            tapMapped(go.b,go.p.x,go.p.y,55,"GO COMMIT "+plan.name);
-            emit("GO SENT ✅ • plan="+plan.name+" • non-idempotent commit; no blind retry");
-            return new SelectionCommit(true,plan.name);
+
+            emit("SELECTION FALLBACK • "+plan.name+" insufficient after bounded GO reconcile • GO NOT SENT"+
+                    " • selected="+finalObserved.selected+"/"+finalObserved.maximum+" • effective-required="+finalEffective);
+            if(pi+1<plans.size()){
+                cancelAndResetSelection(cfg,round,kind,finalObserved.maximum);
+                continue;
+            }
+
+            emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT");
+            cancelAndResetSelection(cfg,round,kind,finalObserved.maximum);
+            returnToExpeditionListAfterSelectionFailure(cfg,round);
+            return new SelectionCommit(false,plan.name);
         }
         return new SelectionCommit(false,"none");
     }
@@ -657,16 +669,16 @@ public final class PilotController {
         return null;
     }
 
-    private PointAndBitmap reconcileGoPreCommit(PilotConfig cfg,PilotConfig.SelectionPlan plan,
-                                                  SelectionObservedNow initial,int effective)throws Exception{
+    private GoReconcileResult reconcileGoPreCommit(PilotConfig cfg,PilotConfig.SelectionPlan plan,
+                                                     SelectionObservedNow initial)throws Exception{
         SelectionObservedNow observed=initial;
         for(int i=0;i<3&&running.get();i++){
             Bitmap b=shot();
             PointF go=Detector.detectActiveGo(b);
             if(go!=null){
                 emit("GO RECONCILE ✅ • state=enabled • attempt="+(i+1)+"/3 • px=("+
-                        Math.round(go.x)+","+Math.round(go.y)+")");
-                return new PointAndBitmap(go,b);
+                        Math.round(go.x)+","+Math.round(go.y)+") • selected="+observed.selected+"/"+observed.maximum);
+                return new GoReconcileResult(new PointAndBitmap(go,b),observed);
             }
             emit("GO RECONCILE • state=unknown/disabled • attempt="+(i+1)+"/3 • no fallback yet");
             if(i<2){
@@ -674,19 +686,15 @@ public final class PilotController {
                 if(reread!=null){
                     observed=reread;
                     int req=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
-                    emit("GO RECONCILE COUNT • selected="+observed.selected+"/"+observed.maximum+" • effective-required="+req);
-                    if(observed.selected<req){
-                        // This is now genuine insufficiency, still pre-GO.
-                        emit("GO RECONCILE → INSUFFICIENT • count changed before commit");
-                        throw new SelectionBecameInsufficientException(observed);
-                    }
+                    emit("GO RECONCILE COUNT • selected="+observed.selected+"/"+observed.maximum+" • effective-required="+req+
+                            " • GO remains source of truth if it becomes enabled");
                 }
                 Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
                 if(row==null) throw new RuntimeException("selection page disappeared before GO commit; refusing retry/fallback");
                 sleep(cfg.fast?220:360);
             }
         }
-        return null;
+        return new GoReconcileResult(null,observed);
     }
 
     private void cancelAndResetSelection(PilotConfig cfg,int round,CargoDetector.Kind kind,int priorMaximum)throws Exception{
@@ -1041,7 +1049,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.3.8-alpha20 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.3.9-alpha21 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

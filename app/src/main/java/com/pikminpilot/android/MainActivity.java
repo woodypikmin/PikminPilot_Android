@@ -78,9 +78,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.8-alpha20 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.3.9-alpha21 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.3.8-alpha20 • selection fallback • strict orange-red GO • top-clipped BUSY guard • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.3.9-alpha21 • GO-enabled commit • top+bottom clipped BUSY guard • fallback 岩/紫/粉/白 • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -121,7 +121,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         cargoHint.setText(cargoText);
         speedHint.setText(fast?"快速模式只縮短已驗證的等待與選取間隔；辨識重試與安全判定仍保留。":"穩定模式沿用目前已驗證的等待與辨識節奏。");
         int min=PilotConfig.minimumCount(pikminType);
-        countTitle.setText("每輪 "+PilotConfig.pikminName(pikminType)+"皮克敏");countHint.setText("最低 "+min+" 隻；每次 Run 固定同一數量");pikminCountView.setText(pikminCount+" 隻");
+        countTitle.setText("每輪 "+PilotConfig.pikminName(pikminType)+"皮克敏");countHint.setText("設定目標 "+pikminCount+" 隻；若遊戲已亮 GO，會接受較少但可合法出發的隊伍");pikminCountView.setText(pikminCount+" 隻");
         summaryRun.setText(runLabel());summaryCargo.setText(PilotConfig.cargoName(cargoMode));
         int enabledFallbacks=(fallback1Enabled!=null&&fallback1Enabled.isChecked()?1:0)+(fallback2Enabled!=null&&fallback2Enabled.isChecked()?1:0)+(fallback3Enabled!=null&&fallback3Enabled.isChecked()?1:0);
         summaryPikmin.setText(PilotConfig.pikminName(pikminType)+"皮×"+pikminCount+(enabledFallbacks>0?" + F"+enabledFallbacks:""));
@@ -147,19 +147,36 @@ public class MainActivity extends Activity implements PilotController.Listener {
         new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),3000);
     }
 
+    // Fallback is intentionally limited to the four special expedition types
+    // used by the iOS workflow. Primary remains unchanged.
     private static final PilotConfig.PikminType[] FALLBACK_TYPES={
-            PilotConfig.PikminType.PINK,PilotConfig.PikminType.WHITE,PilotConfig.PikminType.PURPLE,PilotConfig.PikminType.ROCK,
-            PilotConfig.PikminType.RED,PilotConfig.PikminType.YELLOW,PilotConfig.PikminType.BLUE};
+            PilotConfig.PikminType.ROCK,PilotConfig.PikminType.PURPLE,
+            PilotConfig.PikminType.PINK,PilotConfig.PikminType.WHITE};
 
     private void setupFallbackUi(){
-        String[] typeNames={"粉紅皮","白皮","紫皮","岩皮","紅皮","黃皮","藍皮"};
+        String[] typeNames={"岩皮","紫皮","粉紅皮","白皮"};
         String[] counts=new String[12]; for(int i=0;i<12;i++)counts[i]=(i+1)+" 隻";
         Spinner[] ts={fallback1Type,fallback2Type,fallback3Type}; Spinner[] cs={fallback1Count,fallback2Count,fallback3Count}; CheckBox[] es={fallback1Enabled,fallback2Enabled,fallback3Enabled};
         for(int i=0;i<3;i++){
             ts[i].setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,typeNames));
             cs[i].setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,counts));
-            int defaultType=i==0?3:(i==1?4:5); // rock, red, yellow
-            ts[i].setSelection(Math.max(0,Math.min(FALLBACK_TYPES.length-1,prefs.getInt("fb"+(i+1)+"Type",defaultType))));
+            int defaultType=i==0?0:(i==1?1:2); // rock, purple, pink
+            String v2Key="fb"+(i+1)+"TypeV2";
+            int savedType;
+            if(prefs.contains(v2Key)) savedType=prefs.getInt(v2Key,defaultType);
+            else {
+                // Migrate alpha20's order: pink, white, purple, rock, red, yellow, blue.
+                int oldType=prefs.getInt("fb"+(i+1)+"Type",-1);
+                switch(oldType){
+                    case 0: savedType=2; break; // pink
+                    case 1: savedType=3; break; // white
+                    case 2: savedType=1; break; // purple
+                    case 3: savedType=0; break; // rock
+                    default: savedType=defaultType; break; // red/yellow/blue -> safe default
+                }
+            }
+            if(savedType<0||savedType>=FALLBACK_TYPES.length) savedType=defaultType;
+            ts[i].setSelection(savedType);
             cs[i].setSelection(Math.max(0,Math.min(11,prefs.getInt("fb"+(i+1)+"Count",1))));
             es[i].setChecked(prefs.getBoolean("fb"+(i+1)+"Enabled",false));
             final int idx=i;
@@ -174,7 +191,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
 
     private void saveFallback(SharedPreferences.Editor e,int n,CheckBox enabled,Spinner type,Spinner count){
         e.putBoolean("fb"+n+"Enabled",enabled.isChecked())
-                .putInt("fb"+n+"Type",type.getSelectedItemPosition())
+                .putInt("fb"+n+"TypeV2",type.getSelectedItemPosition())
                 .putInt("fb"+n+"Count",count.getSelectedItemPosition());
     }
 

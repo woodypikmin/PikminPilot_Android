@@ -616,21 +616,23 @@ public final class Detector {
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
 
-        // GO is a non-idempotent commit action.  Be intentionally stricter than
-        // ordinary button detectors: only accept a LARGE orange/red component in
-        // the bottom-right corner.  This excludes the expedition/drone control,
-        // which can light at the same time but is smaller and/or more central.
-        int x0=Math.max(0,(int)(vp.left+vp.width()*0.70));
+        // GO is a non-idempotent commit action. Use BOTH viewport-relative and
+        // absolute screenshot gates so a bright drone / expedition control in
+        // the lower middle can never become a GO candidate even if activeContentRect
+        // is unusual on a vendor screenshot.
+        int x0=Math.max((int)(vp.left+vp.width()*0.70f),(int)(w*0.70f));
         int x1=Math.min(w,(int)vp.right);
-        int y0=Math.max(0,(int)(vp.top+vp.height()*0.76));
+        int y0=Math.max((int)(vp.top+vp.height()*0.76f),(int)(h*0.76f));
         int y1=Math.min(h,(int)vp.bottom);
         boolean[] mask=new boolean[w*h];
-        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
+        for(int y=Math.max(0,y0);y<y1;y++) for(int x=Math.max(0,x0);x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
-            // Active GO is orange/red, not generic warm yellow/beige.
-            boolean orangeRed=(v.h<=48||v.h>=345);
-            if(orangeRed&&v.s>=0.34&&v.v>=0.60) mask[y*w+x]=true;
+            // The enabled GO disc is peach/orange/red. Do not accept yellow,
+            // beige, cyan, or generic bright controls.
+            boolean orangeRed=(v.h<=38||v.h>=350);
+            if(orangeRed&&v.s>=0.30&&v.v>=0.62) mask[y*w+x]=true;
         }
+
         double area=Math.max(1,vp.width()*vp.height());
         PointF best=null; double bestScore=-1e9;
         for(Component c:components(mask,w,h)) {
@@ -642,11 +644,29 @@ public final class Detector {
             if(wf<0.135||hf<0.060) continue;
             if(aspect<0.62||aspect>1.55) continue;
             if(fill<0.24) continue;
+
             PointF center=c.center();
             double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
             double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
-            if(nx<0.76||ny<0.80) continue;
-            double score=c.count/area*7.0 + fill*0.8 - Math.abs(nx-0.86)*0.25 - Math.abs(ny-0.90)*0.25;
+            double ax=center.x/Math.max(1.0,w), ay=center.y/Math.max(1.0,h);
+            if(nx<0.76||ny<0.80||ax<0.74||ay<0.78) continue;
+
+            // The actual GO disc contains large white GO glyphs. This extra
+            // structural check rejects warm artwork that happens to sit in the
+            // same corner.
+            int white=0,sampled=0;
+            int sx0=Math.max(0,(int)c.rect.left),sx1=Math.min(w-1,(int)c.rect.right);
+            int sy0=Math.max(0,(int)c.rect.top),sy1=Math.min(h-1,(int)c.rect.bottom);
+            for(int yy=sy0;yy<=sy1;yy+=3) for(int xx=sx0;xx<=sx1;xx+=3){
+                Hsv v=hsv(b.getPixel(xx,yy));
+                if(v.s<=0.20&&v.v>=0.86) white++;
+                sampled++;
+            }
+            double whiteFraction=sampled>0?(double)white/sampled:0.0;
+            if(whiteFraction<0.020) continue;
+
+            double score=c.count/area*7.0 + fill*0.8 + Math.min(0.35,whiteFraction) -
+                    Math.abs(ax-0.86)*0.28 - Math.abs(ay-0.90)*0.28;
             if(score>bestScore){bestScore=score;best=center;}
         }
         return best;

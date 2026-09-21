@@ -144,11 +144,19 @@ public final class CargoDetector {
         // real vertical side rails from the dynamic contentTopY down to that border.
         // The recovered rectangle stops at the border, so nearby AVAILABLE rows
         // below it are never blocked merely for sharing the same column.
-        mergeStatusCards(cards,detectTopClippedStatusCardsTolerant(b,navGuard.contentTopY));
+        List<StatusCard> topClippedCards=detectTopClippedStatusCardsTolerant(b,navGuard.contentTopY);
+        mergeStatusCards(cards,topClippedCards);
+        // Symmetric protection for the bottom edge. A BUSY/COMPLETE card can
+        // enter from below with only its TOP border visible. Without this guard,
+        // the fruit artwork inside that clipped card can look AVAILABLE.
+        List<StatusCard> bottomClippedCards=detectBottomClippedStatusCardsTolerant(b,navGuard.contentTopY);
+        mergeStatusCards(cards,bottomClippedCards);
         List<String> diagnostics=new ArrayList<>();
         diagnostics.add((navGuard.proven?"NAV-GUARD[OK] ":"NAV-GUARD[MISS] ")+
                 "source="+navGuard.source+" contentTopY="+Math.round(navGuard.contentTopY)+
                 " ("+String.format(java.util.Locale.US,"%.3f",navGuard.contentTopY/Math.max(1f,h))+"H)");
+        if(!topClippedCards.isEmpty()||!bottomClippedCards.isEmpty())
+            diagnostics.add("STATUS-GUARD[CLIPPED] top="+topClippedCards.size()+" bottom="+bottomClippedCards.size());
         // rawStatusBands was computed once above and is reused both for card
         // reconstruction and local candidate blocking. Avoiding a second full
         // image border pass materially shortens every list scan.
@@ -702,6 +710,64 @@ public final class CargoDetector {
             }
         }
         return out;
+    }
+
+    /**
+     * Recover BUSY/COMPLETE cards clipped by the BOTTOM of the screenshot.
+     *
+     * Real list screenshots often show only the top pastel border and one long
+     * side rail of an in-transit card at the bottom edge. Requiring a full
+     * top+bottom pair therefore misses the fruit inside that card. We only
+     * activate this guard in the lower part of the screen and require the top
+     * border plus rails that continue toward the physical bottom edge.
+     */
+    private static List<StatusCard> detectBottomClippedStatusCardsTolerant(Bitmap b,float contentTopY){
+        int w=b.getWidth(),h=b.getHeight();
+        List<Band> bands=horizontalBandsTolerant(b);
+        List<StatusCard> out=new ArrayList<>();
+        float minTop=Math.max(contentTopY+h*0.18f,h*0.68f);
+        for(Band band:bands){
+            float cy=(float)band.center();
+            if(cy<minTop||cy>h*0.965f) continue;
+
+            int railStart=Math.min(h-2,band.y1+2);
+            int[] rails=verticalRailRowsTolerant(b,band.state,band.col,railStart,h-2);
+            int deepStart=Math.max(railStart,(int)(h*0.90f));
+            int[] deep=verticalRailRowsTolerant(b,band.state,band.col,deepStart,h-2);
+
+            int longRail=Math.max(18,(int)(h*0.045f));
+            int bothRails=Math.max(8,(int)(h*0.016f));
+            int deepNeed=Math.max(3,(int)(h*0.004f));
+
+            boolean oneLongToEdge=Math.max(rails[0],rails[1])>=longRail &&
+                    Math.max(deep[0],deep[1])>=deepNeed;
+            boolean bothVisible=Math.min(rails[0],rails[1])>=bothRails &&
+                    Math.max(deep[0],deep[1])>=deepNeed;
+
+            if(oneLongToEdge||bothVisible){
+                out.add(new StatusCard(CardState.BLOCKED,cardRect(band.col,band.y0,h,w)));
+            }
+        }
+        return out;
+    }
+
+    /** Return {leftRailRows,rightRailRows} for tolerant BUSY/COMPLETE side rails. */
+    private static int[] verticalRailRowsTolerant(Bitmap b,CardState state,int col,int y0,int y1){
+        if(y1<=y0)return new int[]{0,0};
+        int w=b.getWidth(),h=b.getHeight();double cw=w/3.0;
+        double left=col*cw+w*0.030,right=(col+1)*cw-w*0.030;
+        int strip=Math.max(3,(int)(w*0.010));
+        int lx0=Math.max(0,(int)left-strip),lx1=Math.min(w-1,(int)left+strip);
+        int rx0=Math.max(0,(int)right-strip),rx1=Math.min(w-1,(int)right+strip);
+        int yy0=Math.max(0,y0),yy1=Math.min(h-1,y1),leftRows=0,rightRows=0;
+        for(int y=yy0;y<=yy1;y++){
+            int leftHits=0,rightHits=0;
+            for(int x=lx0;x<=lx1;x++) if(tolerantBorder(state,b.getPixel(x,y))) leftHits++;
+            for(int x=rx0;x<=rx1;x++) if(tolerantBorder(state,b.getPixel(x,y))) rightHits++;
+            if(leftHits>=1) leftRows++;
+            if(rightHits>=1) rightRows++;
+        }
+        return new int[]{leftRows,rightRows};
     }
 
     private static int verticalRowsTolerant(Bitmap b,CardState state,int col,int y0,int y1){
