@@ -1,35 +1,23 @@
-# Android 0.4.0-alpha22 reliability note
+# Android 0.4.1-alpha23 reliability note
 
-This release is a minimal delta from alpha20 and targets three field failures shown in real screenshots.
+This release is a minimal delta from alpha22. It does not change cargo scanning, GO detection, Green-X, expedition navigation, or the fallback reset rules.
 
-## 1. Bottom-clipped carried fruit
+## Sticky fallback progression
 
-alpha20 already recovered top-clipped BUSY/COMPLETE cards. alpha21 adds the symmetric lower-edge case: a carried card whose bottom is outside the screenshot may expose only its top pastel border and one or two side rails. The recovered blocked rectangle starts at that top status border and extends only to the screenshot bottom, so AVAILABLE rows above remain untouched.
+The active selection plan now has a monotonic cursor for the lifetime of one START session:
 
-## 2. GO versus drone
+- PRIMARY insufficient → advance to FALLBACK-1; if F1 succeeds, the next cargo starts at F1.
+- FALLBACK-1 later insufficient → advance to FALLBACK-2; the next cargo starts at F2.
+- FALLBACK-2 later insufficient → advance to FALLBACK-3; the next cargo starts at F3.
+- A later plan never falls back to an earlier exhausted colour during the same run.
+- A new START resets the cursor to PRIMARY.
 
-GO is treated as a non-idempotent action. The enabled detector now requires:
+All plan-to-plan transitions use one `advanceSelectionPlan()` path. That path updates the sticky cursor and then invokes the same pre-existing reset state machine: Cancel-and-clear when there is a live selection, or zero-selected/no-Cancel in-place colour switching when it is safe.
 
-- physical screenshot bottom-right position (not only active-content normalized position),
-- large orange/red/peach component geometry, and
-- white glyph evidence inside the component.
+## Safety retained
 
-This excludes the centre-bottom drone/control even when it lights at the same time.
-
-## 3. Selection fallback semantics
-
-The game can enable GO with fewer Pikmin than the configured target or displayed maximum. Therefore an enabled GO is now authoritative dispatchability evidence as long as at least one Pikmin is selected.
-
-The count model remains:
-
-`effectiveRequired = min(configuredCount, liveMaximum)`
-
-but it is used only after bounded GO reconcile when GO is still absent:
-
-- GO enabled + selected > 0 => commit, even if selected < effectiveRequired
-- GO absent + selected < effectiveRequired => fallback
-- GO absent + selected >= effectiveRequired => GO/UI recovery problem, not fallback
-
-Fallback reset, no-stacking guarantees, busy-toast diagnostic behavior, and one-shot GO commit safety are unchanged. Fallback UI choices are limited to 岩 / 紫 / 粉紅 / 白.
-
-- alpha22: lower-edge BUSY protection now has candidate-local directional rail proof; selection fallback may switch colour in-place only for proven zero-selection + GO absent + no Cancel.
+- Enabled GO + selected > 0 remains authoritative and commits immediately.
+- GO absent + count satisfied remains GO/UI recovery, not a colour fallback.
+- GO remains non-idempotent and is never blindly retried.
+- Fallback choices remain 岩 / 紫 / 粉紅 / 白.
+- Existing BUSY/COMPLETE guards and list scanning are unchanged.

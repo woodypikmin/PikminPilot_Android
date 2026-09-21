@@ -36,6 +36,10 @@ public final class PilotController {
     private volatile long runStartUptime=0L;
     private final java.util.ArrayDeque<RecentDispatch> recentDispatches=new java.util.ArrayDeque<>();
     private final java.util.ArrayDeque<RecentDispatch> failedSelectionSkips=new java.util.ArrayDeque<>();
+    // Monotonic within one START session. Once a fallback plan is reached, later
+    // cargo starts from that plan instead of wasting time retrying an exhausted
+    // earlier colour. A fresh START resets this floor back to PRIMARY.
+    private volatile int stickySelectionPlanFloor=0;
 
     private static final class RecentDispatch {
         final CargoDetector.Kind kind; final String key; final float nx,ny; final int round;
@@ -80,7 +84,8 @@ public final class PilotController {
 
     public void start(PilotConfig cfg){
         if(running.getAndSet(true)) return;
-        completed=0; recentDispatches.clear(); failedSelectionSkips.clear(); runStartUptime=SystemClock.elapsedRealtime(); currentStage="START";
+        completed=0; recentDispatches.clear(); failedSelectionSkips.clear(); stickySelectionPlanFloor=0;
+        runStartUptime=SystemClock.elapsedRealtime(); currentStage="START";
         worker.execute(()->run(cfg));
     }
 
@@ -94,7 +99,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.0-alpha22 • zero-select in-place fallback • candidate-local clipped BUSY guard • strict bottom-right GO • fallback 岩/紫/粉/白");
+            emit("BUILD 0.4.1-alpha23 • sticky fallback cursor • unified plan advance • zero-select in-place fallback • fallback 岩/紫/粉/白");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -566,15 +571,65 @@ public final class PilotController {
      * while an enabled GO is authoritative proof that the game accepts that team.
      * The transient "似乎很忙" toast remains diagnostic only.
      */
-    private SelectionCommit runSelectionPlans(PilotConfig cfg,int round,CargoDetector.Kind kind)throws Exception{
-        java.util.List<PilotConfig.SelectionPlan> plans=new java.util.ArrayList<>();
-        for(PilotConfig.SelectionPlan p:cfg.selectionPlans) if(p.enabled) plans.add(p);
-        if(plans.isEmpty()) throw new RuntimeException("沒有啟用的皮克敏選擇方案");
+    private boolean[] enabledSelectionPlanFlags(PilotConfig cfg){
+        boolean[] enabled=new boolean[cfg.selectionPlans.size()];
+        for(int i=0;i<enabled.length;i++) enabled[i]=cfg.selectionPlans.get(i).enabled;
+        return enabled;
+    }
 
-        for(int pi=0;pi<plans.size()&&running.get();pi++){
-            PilotConfig.SelectionPlan plan=plans.get(pi);
+    private int firstEnabledSelectionPlanAtOrAfter(PilotConfig cfg,int floor){
+        return SelectionPolicy.firstEnabledAtOrAfter(enabledSelectionPlanFlags(cfg),floor);
+    }
+
+    private int nextEnabledSelectionPlanAfter(PilotConfig cfg,int current){
+        return SelectionPolicy.nextEnabledAfter(enabledSelectionPlanFlags(cfg),current);
+    }
+
+    /**
+     * One transition path for PRIMARY→F1, F1→F2 and F2→F3. The cursor is
+     * advanced before reset so the next cargo never walks backward to a colour
+     * already proven insufficient during this START session.
+     */
+    private void advanceSelectionPlan(PilotConfig cfg,int round,CargoDetector.Kind kind,
+                                      SelectionObservedNow priorObserved,int fromIndex,int toIndex)throws Exception{
+        PilotConfig.SelectionPlan from=cfg.selectionPlans.get(fromIndex);
+        PilotConfig.SelectionPlan to=cfg.selectionPlans.get(toIndex);
+        stickySelectionPlanFloor=SelectionPolicy.advanceStickyFloor(stickySelectionPlanFloor,toIndex);
+        emit("SELECTION PLAN ADVANCE • "+from.name+" → "+to.name+
+                " • same-reset-state-machine • sticky-next-round="+to.name+
+                " • floor="+stickySelectionPlanFloor);
+        cancelAndResetSelection(cfg,round,kind,priorObserved);
+    }
+
+    /**
+     * Pre-GO selection fallback chain. selected/maximum describes the live team,
+     * while an enabled GO is authoritative proof that the game accepts that team.
+     * The transient "似乎很忙" toast remains diagnostic only.
+     *
+     * The plan cursor is sticky for the lifetime of one START session. If PRIMARY
+     * runs out and FALLBACK-1 succeeds, the next cargo starts directly at F1. If
+     * F1 later runs out and advances to F2, later cargo starts at F2, etc.
+     */
+    private SelectionCommit runSelectionPlans(PilotConfig cfg,int round,CargoDetector.Kind kind)throws Exception{
+        int startIndex=firstEnabledSelectionPlanAtOrAfter(cfg,stickySelectionPlanFloor);
+        if(startIndex<0) throw new RuntimeException("沒有啟用的皮克敏選擇方案");
+        if(startIndex>0){
+            PilotConfig.SelectionPlan startPlan=cfg.selectionPlans.get(startIndex);
+            emit("SELECTION STICKY START ✅ • round="+round+" • start="+startPlan.name+
+                    " • type="+PilotConfig.pikminName(startPlan.type)+"皮 • skipped-earlier-plans=true");
+        }
+
+        int planIndex=startIndex;
+        while(planIndex>=0 && planIndex<cfg.selectionPlans.size() && running.get()){
+            PilotConfig.SelectionPlan plan=cfg.selectionPlans.get(planIndex);
+            if(!plan.enabled){
+                planIndex=nextEnabledSelectionPlanAfter(cfg,planIndex);
+                continue;
+            }
+
             stage("FILTER","第 "+round+" 輪："+plan.name+" • "+PilotConfig.pikminName(plan.type)+"皮");
-            emit("SELECTION PLAN • "+plan.name+" • type="+PilotConfig.pikminName(plan.type)+"皮 • configured="+plan.configuredCount);
+            emit("SELECTION PLAN • "+plan.name+" • type="+PilotConfig.pikminName(plan.type)+"皮 • configured="+plan.configuredCount+
+                    " • sticky-floor="+stickySelectionPlanFloor);
 
             PointAndBitmap filter=findPikminFilterAdaptive(cfg,round,plan.type);
             if(filter==null) throw new RuntimeException(plan.name+" "+PilotConfig.pikminName(plan.type)+"皮克敏顏色圓圈未辨識到");
@@ -596,9 +651,6 @@ public final class PilotController {
 
             // IMPORTANT: do NOT fallback merely because selected < configured/effective.
             // Pikmin Bloom can enable GO with a smaller legal team (e.g. 4/12).
-            // The enabled GO is authoritative dispatchability evidence. First do
-            // a bounded GO reconcile; only if GO stays absent do counts decide
-            // whether this is a real insufficiency or a GO/UI recovery problem.
             stage("GO","第 "+round+" 輪："+plan.name+" • 確認 GO");
             GoReconcileResult reconciled=reconcileGoPreCommit(cfg,plan,observed);
             SelectionObservedNow finalObserved=reconciled.observed==null?observed:reconciled.observed;
@@ -611,8 +663,12 @@ public final class PilotController {
                         emit("SELECTION GO-OVERRIDE ✅ • GO enabled with selected="+finalObserved.selected+"/"+finalObserved.maximum+
                                 " below configured/effective="+finalEffective+" • accept game's legal team");
                     }
+                    stickySelectionPlanFloor=SelectionPolicy.advanceStickyFloor(stickySelectionPlanFloor,planIndex);
                     emit("SELECTION COMMIT ✅ • "+plan.name+" • selected="+finalObserved.selected+"/"+finalObserved.maximum+
                             " • effective-required="+finalEffective+" • GO enabled");
+                    if(planIndex>0){
+                        emit("SELECTION PLAN RETAIN ✅ • "+plan.name+" remains start plan for next cargo • floor="+stickySelectionPlanFloor);
+                    }
                     // Non-idempotent: exactly one GO tap. Never blind retry after this line.
                     tapMapped(reconciled.go.b,reconciled.go.p.x,reconciled.go.p.y,55,"GO COMMIT "+plan.name);
                     emit("GO SENT ✅ • plan="+plan.name+" • non-idempotent commit; no blind retry");
@@ -628,12 +684,15 @@ public final class PilotController {
 
             emit("SELECTION FALLBACK • "+plan.name+" insufficient after bounded GO reconcile • GO NOT SENT"+
                     " • selected="+finalObserved.selected+"/"+finalObserved.maximum+" • effective-required="+finalEffective);
-            if(pi+1<plans.size()){
-                cancelAndResetSelection(cfg,round,kind,finalObserved);
+            int nextIndex=nextEnabledSelectionPlanAfter(cfg,planIndex);
+            if(nextIndex>=0){
+                advanceSelectionPlan(cfg,round,kind,finalObserved,planIndex,nextIndex);
+                planIndex=nextIndex;
                 continue;
             }
 
-            emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT");
+            stickySelectionPlanFloor=SelectionPolicy.advanceStickyFloor(stickySelectionPlanFloor,planIndex);
+            emit("SELECTION FALLBACK EXHAUSTED ⚠️ • all enabled plans insufficient • GO NOT SENT • sticky-floor="+stickySelectionPlanFloor);
             cancelAndResetSelection(cfg,round,kind,finalObserved);
             returnToExpeditionListAfterSelectionFailure(cfg,round);
             return new SelectionCommit(false,plan.name);
@@ -1086,7 +1145,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.0-alpha22 • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.1-alpha23 • sticky fallback cursor • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

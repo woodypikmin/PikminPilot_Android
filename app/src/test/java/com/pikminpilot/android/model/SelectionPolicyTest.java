@@ -48,4 +48,26 @@ public class SelectionPolicyTest {
         assertFalse(SelectionPolicy.canSwitchFallbackInPlace(0,false,false,false));
     }
 
+    @Test public void stickyCursor_primaryToFallback1_nextRunStartsFallback1(){
+        boolean[] enabled={true,true,true,true};
+        int floor=SelectionPolicy.advanceStickyFloor(0,1);
+        assertEquals(1,floor);
+        assertEquals(1,SelectionPolicy.firstEnabledAtOrAfter(enabled,floor));
+    }
+    @Test public void stickyCursor_fallback1ToFallback2_usesSameMonotonicRule(){
+        boolean[] enabled={true,true,true,true};
+        int floor=SelectionPolicy.advanceStickyFloor(1,2);
+        assertEquals(2,floor);
+        assertEquals(2,SelectionPolicy.firstEnabledAtOrAfter(enabled,floor));
+    }
+    @Test public void stickyCursor_neverMovesBackwardAfterLaterPlanSucceeds(){
+        assertEquals(2,SelectionPolicy.advanceStickyFloor(2,1));
+        assertEquals(3,SelectionPolicy.advanceStickyFloor(2,3));
+    }
+    @Test public void stickyCursor_skipsDisabledFallbacks(){
+        boolean[] enabled={true,false,true,true};
+        assertEquals(2,SelectionPolicy.nextEnabledAfter(enabled,0));
+        assertEquals(2,SelectionPolicy.firstEnabledAtOrAfter(enabled,1));
+    }
+
 }

@@ -32,4 +32,22 @@ public final class SelectionPolicy {
         return selected==0 && !goEnabled && !cancelVisible && selectionPageVisible;
     }
 
+    /** Return the first enabled plan at/after the sticky floor, or -1. */
+    public static int firstEnabledAtOrAfter(boolean[] enabled,int floor){
+        if(enabled==null||enabled.length==0) return -1;
+        int start=Math.max(0,Math.min(floor,enabled.length));
+        for(int i=start;i<enabled.length;i++) if(enabled[i]) return i;
+        return -1;
+    }
+
+    /** Return the next enabled plan strictly after current, or -1. */
+    public static int nextEnabledAfter(boolean[] enabled,int current){
+        return firstEnabledAtOrAfter(enabled,current+1);
+    }
+
+    /** Sticky fallback progression is monotonic within a START session. */
+    public static int advanceStickyFloor(int currentFloor,int enteredPlanIndex){
+        return Math.max(Math.max(0,currentFloor),Math.max(0,enteredPlanIndex));
+    }
+
 }
