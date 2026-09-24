@@ -1,3 +1,17 @@
+# 0.4.8-alpha32 — BUSY duration cross-row false-positive fix
+
+Minimal delta from alpha31. This fixes a real expedition-list case where selective fruit filtering (for example GREEN) could see visible matching fruit but keep swiping because ordinary AVAILABLE travel-time OCR such as `22小時` from the row above was mis-associated with the next row and emitted `SKIP[BUSY_DURATION_HEADER]`.
+
+Fix:
+- `BUSY_DURATION_PROGRESS` remains valid on any row: duration + actual grey/red BUSY progress rail still vetoes immediately.
+- Pixel-only `BUSY_PROGRESS_RAIL`, full/partial BUSY/COMPLETE cards, local status borders, and second-frame FRUIT BUSY preflight are unchanged.
+- The **duration-only** `BUSY_DURATION_HEADER` fallback is restored to its documented purpose: lower-edge / bottom-clipped candidates only (`centerY >= 78% H`), matching the controller's existing LOWER edge verification zone.
+- Middle rows no longer let the previous AVAILABLE row's normal travel duration block the next row.
+
+Preserved unchanged: alpha31 strict GO ROI fix, fruit colour classification, NAV-GUARD, flower-seedling logic, 24% swipe + 3 s settle, single-tap Pikmin filter, fixed 5-column selection grid, sticky Primary/F1-F3 fallback, loading-safe GO watch, Green X ACK, and screenshot error=3 throttle.
+
+---
+
 # 0.4.8-alpha31 — GO candidate ROI crop fix
 
 Minimal delta from alpha30. The strict GO acceptance contract is unchanged: enabled GO still requires a large orange/red bottom-right disc, two internal white G/O glyph components, and an absolute center at or beyond 79% W / 80% H; the controller still re-checks the hard bottom-right point before the one non-idempotent tap.

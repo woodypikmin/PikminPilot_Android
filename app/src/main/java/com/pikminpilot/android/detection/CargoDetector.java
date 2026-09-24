@@ -222,10 +222,14 @@ public final class CargoDetector {
             // plausible distance ABOVE this exact candidate.
             boolean busyProgressRail=hasBusyProgressRailAboveCandidate(b,col,center,w,h,navGuard.contentTopY);
             boolean busyDurationProgress=hasBusyDurationProgressAboveCandidate(b,ocr,col,center,w,h,navGuard.contentTopY);
-            // Lower-edge fallback: when the bottom of a card is clipped/covered,
-            // the progress rail may also be hidden. There a same-column duration
-            // ABOVE the candidate is sufficient secondary evidence.
-            boolean busyTimeHeader=hasBusyReturnTimeHeaderAboveCandidate(ocr,col,center,w,h,navGuard.contentTopY);
+            // Lower-edge fallback only: when the bottom of a card is clipped/covered,
+            // the progress rail may also be hidden. Duration-only evidence must NOT
+            // run on middle rows, because an AVAILABLE row's ordinary travel-time
+            // label sits above the next row and can otherwise poison that next cargo.
+            // Keep this threshold aligned with PilotController's existing LOWER edge
+            // verification zone; middle-row BUSY still has card/progress-rail vetoes.
+            boolean busyTimeHeader=center.y>=h*0.78f &&
+                    hasBusyReturnTimeHeaderAboveCandidate(ocr,col,center,w,h,navGuard.contentTopY);
             if(lowerBorderEvidence || busyProgressRail || busyDurationProgress || busyTimeHeader) {
                 String reason=busyProgressRail?"SKIP[BUSY_PROGRESS_RAIL]":
                         (busyDurationProgress?"SKIP[BUSY_DURATION_PROGRESS]":
