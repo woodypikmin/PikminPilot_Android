@@ -662,7 +662,14 @@ public final class Detector {
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
 
-        int x0=Math.max((int)(vp.left+vp.width()*0.76f),(int)(w*0.76f));
+        // Candidate collection starts slightly left of the hard acceptance gate.
+        // On some phone layouts the valid GO disc begins left of 76% W; clipping
+        // the orange component there can crop the G glyph out of its component
+        // rect, causing hasGoGlyphPair() to see only O and reject a visibly-lit GO.
+        // This does NOT relax GO acceptance: the component center must still pass
+        // the independent >=79% physical-screen and viewport gates below, and the
+        // controller repeats the same hard bottom-right safety check before tap.
+        int x0=Math.max((int)(vp.left+vp.width()*0.72f),(int)(w*0.72f));
         int x1=Math.min(w,(int)vp.right);
         int y0=Math.max((int)(vp.top+vp.height()*0.78f),(int)(h*0.78f));
         int y1=Math.min(h,(int)vp.bottom);

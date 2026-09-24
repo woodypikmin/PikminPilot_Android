@@ -1,3 +1,16 @@
+# 0.4.8-alpha31 — GO candidate ROI crop fix
+
+Minimal delta from alpha30. The strict GO acceptance contract is unchanged: enabled GO still requires a large orange/red bottom-right disc, two internal white G/O glyph components, and an absolute center at or beyond 79% W / 80% H; the controller still re-checks the hard bottom-right point before the one non-idempotent tap.
+
+Fix:
+- The orange/red **candidate-collection ROI** now begins at 72% W instead of 76% W. This is intentionally only a collection margin, not a looser acceptance gate.
+- On the reported 912×2046 selection screenshot, alpha30 clipped the left side of the valid GO orange component at x=693 (=76% W). That made the white `G` touch the derived glyph-validation boundary, so `hasGoGlyphPair()` discarded `G` and saw only `O`; `detectActiveGo()` therefore returned null even though GO was visibly enabled.
+- With the wider collection margin, the complete GO component is retained, both `G` and `O` pass the existing glyph-pair proof, and the existing >=79% physical-screen center lock still excludes the central drone.
+
+Preserved unchanged: single-tap Pikmin filter, selection-grid geometry, sticky Primary/F1-F3 state machine, loading behavior, GO non-idempotency, BUSY/COMPLETE vetoes, fruit classification, Green X ACK, screenshot error=3 throttle, 24% list swipe, and 3 s settle.
+
+---
+
 # 0.4.8-alpha30 — persistent loading GO-watch + fruit color filter
 
 Key changes:
