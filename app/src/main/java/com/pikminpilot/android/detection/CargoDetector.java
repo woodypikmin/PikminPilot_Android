@@ -61,8 +61,12 @@ public final class CargoDetector {
         public final RectF rect;
         public final Kind kind;
         public final String label;
+        public final PilotConfig.FruitGroup fruitGroup;
         public Candidate(PointF center, RectF rect, Kind kind, String label) {
-            this.center=center; this.rect=rect; this.kind=kind; this.label=label;
+            this(center,rect,kind,label,null);
+        }
+        public Candidate(PointF center, RectF rect, Kind kind, String label, PilotConfig.FruitGroup fruitGroup) {
+            this.center=center; this.rect=rect; this.kind=kind; this.label=label; this.fruitGroup=fruitGroup;
         }
     }
 
@@ -259,11 +263,12 @@ public final class CargoDetector {
             else if(excludedNonFruit || !hasText) kind=Kind.UNKNOWN;
             else kind=Kind.FRUIT;
 
-            Candidate candidate=new Candidate(center,c.rect,kind,label);
+            PilotConfig.FruitGroup fruitGroup = kind==Kind.FRUIT ? classifyFruitGroup(b,c.rect,label) : null;
+            Candidate candidate=new Candidate(center,c.rect,kind,label,fruitGroup);
             if(kind==Kind.FRUIT) {
                 fruit.add(candidate);
                 String source=knownFruit?(lemonRepair?"LEMON_OCR_REPAIR":"KNOWN_TEXT"):"BY_EXCLUSION";
-                diagnostics.add("ACCEPT[FRUIT:"+source+"] "+label+
+                diagnostics.add("ACCEPT[FRUIT:"+source+"] group="+PilotConfig.fruitGroupName(fruitGroup)+" "+label+
                         " @("+Math.round(center.x)+","+Math.round(center.y)+")");
             }
             else if(kind==Kind.SEEDLING) {
@@ -720,9 +725,9 @@ public final class CargoDetector {
         if(x1<=x0||y1<=y0) return false;
 
         int span=x1-x0+1;
-        int needGrey=Math.max(28,(int)(span*0.38f));
+        int needGrey=Math.max(24,(int)(span*0.34f));
         int prefixEnd=Math.min(x1,x0+(int)(span*0.42f));
-        int needRed=Math.max(4,(int)(span*0.018f));
+        int needRed=Math.max(3,(int)(span*0.012f));
 
         for(int y=y0;y<=y1;y++){
             int longestGrey=0,greyRun=0,redCount=0;
@@ -733,7 +738,7 @@ public final class CargoDetector {
                 // Progress track: light neutral grey.  Allow a little more
                 // colour/brightness variance than the OCR-coupled detector to
                 // survive display colour management, but exclude white canvas.
-                boolean grey=(max-min<=18 && max>=170 && max<=252);
+                boolean grey=(max-min<=28 && max>=150 && max<=252);
                 if(grey){
                     greyRun++;
                     if(greyRun>longestGrey) longestGrey=greyRun;
@@ -743,7 +748,8 @@ public final class CargoDetector {
                     // Filled prefix is warm red/pink.  Keep this broad enough
                     // for different Android colour pipelines without accepting
                     // yellow/orange cargo artwork.
-                    boolean warmRed=(r>=205 && g>=45 && g<=175 && bl>=45 && bl<=180 && r-g>=45 && r-bl>=35);
+                    Hsv hv=hsv(p);
+                    boolean warmRed=(hv.h<=34||hv.h>=350) && hv.s>=0.24 && hv.v>=0.50 && r>=g+24 && r>=bl+16;
                     if(warmRed) redCount++;
                 }
             }
@@ -826,22 +832,46 @@ public final class CargoDetector {
      * rail or a phone shifts the pastel border outside the RGB tolerance.
      */
     private static boolean hasBusyReturnTimeHeaderAboveCandidate(List<OcrItem> ocr,int col,PointF center,int w,int h,float contentTopY){
-        // This semantic fallback is intentionally limited to lower-edge cargo,
-        // where a clipped BUSY card can lose its bottom/side rails. Elsewhere
-        // normal AVAILABLE rows can have their own travel-duration text near
-        // adjacent rows, so the full card detector remains authoritative.
-        if(center.y<Math.max(contentTopY+h*0.20f,h*0.72f)) return false;
+        // Remaining-time text ABOVE the carried cargo is itself strong BUSY
+        // evidence.  It can be 158日18小時, 2小時, 35分鐘, 17分, 7分, etc.
+        // Do not restrict this to the very bottom of the viewport: several user
+        // samples contain fully visible BUSY rows in the middle.  The vertical
+        // association is deliberately tight so a previous row's normal travel
+        // duration cannot block the next AVAILABLE row.
         float cw=w/3f;
         float x0=col*cw, x1=(col+1)*cw;
-        float minY=Math.max(contentTopY,center.y-h*0.220f);
-        float maxY=center.y-h*0.025f;
+        float minY=Math.max(contentTopY,center.y-h*0.145f);
+        float maxY=center.y-h*0.022f;
         for(OcrItem item:ocr){
             float cx=item.rect.centerX(), cy=item.rect.centerY();
             if(cx<x0||cx>x1||cy<minY||cy>maxY) continue;
+            float delta=center.y-cy;
+            if(delta<h*0.030f||delta>h*0.140f) continue;
             String n=normalizeDurationText(item.text);
             if(looksLikeDuration(n)) return true;
         }
         return false;
+    }
+
+    /**
+     * OCR-free second-frame veto used immediately before a FRUIT tap.  This is
+     * intentionally independent from the first scan: if a BUSY card border or
+     * progress rail finishes animating a few hundred milliseconds later, the
+     * positive AVAILABLE action is cancelled.
+     */
+    public static String visualBusyReasonAt(Bitmap b,PointF center,float contentTopY){
+        int w=b.getWidth(),h=b.getHeight();
+        int col=Math.min(2,Math.max(0,(int)(center.x/(w/3.0))));
+        List<Band> raw=horizontalBands(b);
+        List<Band> tolerant=horizontalBandsTolerant(b);
+        List<StatusCard> cards=detectStatusCards(b,raw);
+        mergeStatusCards(cards,detectStatusCardsTolerant(b,tolerant));
+        mergeStatusCards(cards,detectTopClippedStatusCardsTolerant(b,contentTopY,tolerant));
+        mergeStatusCards(cards,detectBottomClippedStatusCardsTolerant(b,contentTopY,tolerant));
+        if(insideAnyCard(center,cards)) return "STATUS_CARD";
+        if(hasBottomClippedStatusEvidence(b,tolerant,col,center,contentTopY)) return "STATUS_CLIPPED";
+        if(hasBusyProgressRailAboveCandidate(b,col,center,w,h,contentTopY)) return "BUSY_PROGRESS_RAIL";
+        return null;
     }
 
     private static RectF labelRectNearObject(RectF object,int w,int h,List<OcrItem> ocr){
@@ -1133,6 +1163,41 @@ public final class CargoDetector {
     private static boolean border(CardState s,int p){return s==CardState.BUSY?isBusy(p):s==CardState.COMPLETE&&isComplete(p);}
     private static boolean isBusy(int p){int r=(p>>16)&255,g=(p>>8)&255,bb=p&255,mx=Math.max(r,Math.max(g,bb)),mn=Math.min(r,Math.min(g,bb));return r>230&&g>220&&bb>220&&r-g>=3&&r-bb>=2&&mx-mn<35;}
     private static boolean isComplete(int p){int r=(p>>16)&255,g=(p>>8)&255,bb=p&255,mx=Math.max(r,Math.max(g,bb)),mn=Math.min(r,Math.min(g,bb));return g>220&&r>200&&bb>200&&g-r>=4&&g-bb>=2&&mx-mn<40;}
+
+
+    /**
+     * Coarse fruit-colour bucket used only for the user's optional fruit filter.
+     * Cargo safety (BUSY/COMPLETE) remains independent and runs before this.
+     * Prefer semantic labels when readable; otherwise use the fruit component's
+     * own saturated pixels so OCR damage does not force a wrong bucket.
+     */
+    private static PilotConfig.FruitGroup classifyFruitGroup(Bitmap b, RectF rect, String label) {
+        String n=normalize(label);
+        if(n.contains("青蘋果")||n.contains("青苹果")) return PilotConfig.FruitGroup.GREEN;
+        if(n.contains("檸")||n.contains("柠")||n.contains("柳橙")||n.contains("橘")||n.contains("橙"))
+            return PilotConfig.FruitGroup.YELLOW;
+        if((n.contains("蘋果")||n.contains("苹果")||n.contains("桃")) && !n.contains("青蘋果") && !n.contains("青苹果"))
+            return PilotConfig.FruitGroup.RED;
+        if(n.contains("梅子")||n.contains("梅")) return PilotConfig.FruitGroup.BLUE;
+
+        int x0=Math.max(0,(int)rect.left), x1=Math.min(b.getWidth()-1,(int)rect.right);
+        int y0=Math.max(0,(int)rect.top), y1=Math.min(b.getHeight()-1,(int)rect.bottom);
+        double green=0,yellow=0,red=0,blue=0;
+        for(int y=y0;y<=y1;y+=2) for(int x=x0;x<=x1;x+=2){
+            Hsv v=hsv(b.getPixel(x,y));
+            if(v.s<0.28||v.v<0.20) continue;
+            if(v.h>=70&&v.h<=165) green+=v.s;
+            else if(v.h>=28&&v.h<70) yellow+=v.s;
+            else if(v.h<=27||v.h>=335) red+=v.s;
+            else if(v.h>=235&&v.h<335) blue+=v.s;
+        }
+        double m=Math.max(Math.max(green,yellow),Math.max(red,blue));
+        if(m<=0) return null;
+        if(m==green) return PilotConfig.FruitGroup.GREEN;
+        if(m==yellow) return PilotConfig.FruitGroup.YELLOW;
+        if(m==red) return PilotConfig.FruitGroup.RED;
+        return PilotConfig.FruitGroup.BLUE;
+    }
 
     private static boolean isFruitColor(Hsv v){boolean colorful=v.s>0.30&&v.v>0.24,purple=v.h>=235&&v.h<=335&&v.s>0.09&&v.v>0.11,red=(v.h<=28||v.h>=332)&&v.s>0.20&&v.v>0.18;return colorful||purple||red;}
     private static Hsv hsv(int color){float[] a=new float[3];android.graphics.Color.colorToHSV(color,a);return new Hsv(a[0],a[1],a[2]);}

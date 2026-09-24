@@ -60,3 +60,10 @@ All plan-to-plan transitions use one `advanceSelectionPlan()` path. That path up
 - Selection loading placeholders no longer block slot taps. Geometric taps are allowed while sprites load, but Cancel/Fallback is locked until loading clears and two non-loading frames settle.
 - Strict bottom-right GO remains authoritative during loading. If GO lights, commit; do not cancel because selected/max is temporarily stale.
 - If loading clears at 0/N with GO off, retry the same plan once before fallback. Persistent loading fails closed without Cancel/Fallback.
+
+## Android 0.4.7-alpha29 reliability delta
+
+- Filter taps are now single-shot. A selected-chip shadow detector prevents tapping an already-selected colour; no blind second tap is allowed.
+- GO requires an absolute bottom-right position plus an orange/red disc and two large white G/O glyph components. The controller repeats the absolute position safety gate before dispatch.
+- Remaining-time OCR above a candidate is accepted as BUSY evidence on all rows with a tight vertical association.
+- Every non-edge FRUIT candidate gets an OCR-free second-frame visual BUSY veto before the cargo tap; edge candidates retain their stronger full second-frame scan.

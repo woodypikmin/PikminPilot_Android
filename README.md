@@ -1,4 +1,15 @@
-# 0.4.6-alpha28 — pixel-first BUSY progress-rail guard
+# 0.4.8-alpha30 — persistent loading GO-watch + fruit color filter
+
+Key changes:
+- Selection loading no longer fails after a fixed 12–15s timeout. Concrete placeholder rings gate loading; the broad heuristic alone cannot keep the state stuck when placeholders=0. While loading, Cancel/Fallback remain locked and the controller keeps watching the strict bottom-right GO.
+- Optional fruit group filter: 全拿, 青(青蘋果), 黃(檸檬/柳橙), 紅(蘋果/桃子), 藍(梅子). Label-first grouping with visual color fallback; BUSY/COMPLETE safety still runs before fruit filtering.
+- Existing single-tap Pikmin color filter, BUSY preflight, GO safety, sticky fallback, list settle, and Green-X recovery remain intact.
+
+This build addresses two real-phone regressions without rewriting the stable navigation/transport flow:
+
+- **Pikmin colour filter is now single-tap/idempotency-safe.** A proven colour chip is never blindly tapped twice. The app first checks the selected-chip drop shadow; after one tap it accepts selected-shadow, row-dim, or roster-loading as ACK. If visual ACK stays ambiguous it continues to selection/GO reconciliation rather than toggling the chip again.
+- **GO has an independent hard safety lock.** The detector only accepts a large orange/red disc in the absolute bottom-right with two internal white glyph blobs (G/O), and the controller rejects any GO point left of 79% W or above 80% H. The centre drone cannot pass this gate.
+- **Fruit gets an OCR-free second-frame BUSY preflight before tap.** A fresh screenshot re-checks BUSY/COMPLETE cards, clipped-card evidence, and the grey+red progress rail. Duration text above a candidate (17分 / 2小時 / 158日18小時 etc.) is now accepted on any row with a tight vertical association, not only at the bottom edge.
 
 This release fixes a concrete false-AVAILABLE case seen on a 912×2048 expedition screenshot: the middle-bottom green apple sits in a BUSY card whose header is `12分`. The previous detector only inspected the grey/red progress rail after OCR had recognized the duration text. If ML Kit missed or fragmented `12分`, the clearly visible BUSY rail was ignored.
 

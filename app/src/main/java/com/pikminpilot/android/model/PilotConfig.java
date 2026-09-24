@@ -7,6 +7,7 @@ import java.util.List;
 public final class PilotConfig {
     public enum PikminType { PINK, WHITE, PURPLE, ROCK, RED, YELLOW, BLUE }
     public enum CargoMode { FRUIT, SEEDLING, BOTH }
+    public enum FruitGroup { GREEN, YELLOW, RED, BLUE }
 
     public static final class SelectionPlan {
         public final String name;
@@ -32,19 +33,31 @@ public final class PilotConfig {
     public final int dispatchTarget; // 0 = infinite
     public final boolean fast;
     public final List<SelectionPlan> selectionPlans;
+    public final boolean fruitAll;
+    public final java.util.Set<FruitGroup> fruitGroups;
 
     public PilotConfig(PikminType type, CargoMode cargoMode, int pikminCount, int dispatchTarget, boolean fast) {
-        this(type,cargoMode,pikminCount,dispatchTarget,fast,Collections.emptyList());
+        this(type,cargoMode,pikminCount,dispatchTarget,fast,Collections.emptyList(),true,java.util.EnumSet.allOf(FruitGroup.class));
     }
 
     public PilotConfig(PikminType type, CargoMode cargoMode, int pikminCount, int dispatchTarget, boolean fast,
                        List<SelectionPlan> fallbacks) {
+        this(type,cargoMode,pikminCount,dispatchTarget,fast,fallbacks,true,java.util.EnumSet.allOf(FruitGroup.class));
+    }
+
+    public PilotConfig(PikminType type, CargoMode cargoMode, int pikminCount, int dispatchTarget, boolean fast,
+                       List<SelectionPlan> fallbacks, boolean fruitAll, java.util.Set<FruitGroup> fruitGroups) {
         this.type=type;
         this.cargoMode=cargoMode;
         int minimum=minimumCount(type);
         this.pikminCount=Math.max(minimum,Math.min(12,pikminCount));
         this.dispatchTarget=Math.max(0,dispatchTarget);
         this.fast=fast;
+        this.fruitAll=fruitAll;
+        java.util.EnumSet<FruitGroup> fg=java.util.EnumSet.noneOf(FruitGroup.class);
+        if(fruitGroups!=null) fg.addAll(fruitGroups);
+        if(fruitAll || fg.isEmpty()) fg=java.util.EnumSet.allOf(FruitGroup.class);
+        this.fruitGroups=java.util.Collections.unmodifiableSet(fg);
         List<SelectionPlan> plans=new ArrayList<>();
         plans.add(new SelectionPlan("PRIMARY",type,this.pikminCount,true));
         if(fallbacks!=null){
@@ -57,6 +70,22 @@ public final class PilotConfig {
             }
         }
         this.selectionPlans=Collections.unmodifiableList(plans);
+    }
+
+
+    public boolean acceptsFruitGroup(FruitGroup group) {
+        return fruitAll || (group!=null && fruitGroups.contains(group));
+    }
+
+    public static String fruitGroupName(FruitGroup group) {
+        if(group==null) return "未知";
+        switch(group) {
+            case GREEN: return "青";
+            case YELLOW: return "黃";
+            case RED: return "紅";
+            case BLUE: return "藍";
+            default: return group.name();
+        }
     }
 
     public static int minimumCount(PikminType type) {

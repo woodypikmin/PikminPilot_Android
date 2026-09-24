@@ -100,7 +100,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • loading-safe GO gate • free run-count • adaptive screenshot throttle");
+            emit("BUILD 0.4.8-alpha30 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -177,6 +177,11 @@ public final class PilotController {
             }
             guardMisses=0;
             List<CargoDetector.Candidate> available=result.matching(cfg.cargoMode);
+            int beforeFruitFilter=available.size();
+            available.removeIf(c->c.kind==CargoDetector.Kind.FRUIT && !cfg.acceptsFruitGroup(c.fruitGroup));
+            if(beforeFruitFilter!=available.size())
+                emit("SCAN-DIAG SKIP[FRUIT_COLOR_FILTER] count="+(beforeFruitFilter-available.size())+
+                        " • selected="+cfg.fruitGroups);
             int beforeNav=available.size();
             available.removeIf(c->c.center.y<result.contentTopY);
             if(beforeNav!=available.size()) emit("SCAN-DIAG SKIP[NAV_GUARD] count="+(beforeNav-available.size()));
@@ -253,6 +258,32 @@ public final class PilotController {
         float h=first.getHeight(),w=first.getWidth();
         boolean lower=candidate.center.y>=h*0.78f;
         boolean upper=candidate.center.y<=firstResult.contentTopY+h*0.12f;
+
+        // Fruit gets a cheap OCR-free second-frame BUSY veto even away from the
+        // viewport edges.  Many real-phone misses happen while the pale border /
+        // progress rail is still settling after returning to the list.  A second
+        // screenshot is much cheaper than a second ML Kit pass and prevents an
+        // animated BUSY card from becoming a positive tap.
+        if(candidate.kind==CargoDetector.Kind.FRUIT && !lower && !upper){
+            emit("CARGO BUSY PREFLIGHT ⏳ • second-frame visual veto • wait=700ms");
+            sleep(700);
+            Bitmap second=shot();
+            float sx=second.getWidth()/Math.max(1f,first.getWidth());
+            float sy=second.getHeight()/Math.max(1f,first.getHeight());
+            PointF mapped=new PointF(candidate.center.x*sx,candidate.center.y*sy);
+            float contentTop=firstResult.contentTopY*sy;
+            String reason=CargoDetector.visualBusyReasonAt(second,mapped,contentTop);
+            if(reason!=null){
+                emit("CARGO BUSY PREFLIGHT REJECTED ✅ • "+reason+
+                        " • object=("+Math.round(mapped.x)+","+Math.round(mapped.y)+") • no tap");
+                return null;
+            }
+            RectF rr=new RectF(candidate.rect.left*sx,candidate.rect.top*sy,candidate.rect.right*sx,candidate.rect.bottom*sy);
+            CargoDetector.Candidate mappedCandidate=new CargoDetector.Candidate(mapped,rr,candidate.kind,candidate.label);
+            emit("CARGO BUSY PREFLIGHT CLEAR ✅ • second frame has no visual BUSY evidence");
+            return new CargoAndBitmap(mappedCandidate,second);
+        }
+
         if(!lower&&!upper) return new CargoAndBitmap(candidate,first);
 
         emit("CARGO EDGE VERIFY ⏳ • risk="+(lower?"LOWER":"UPPER")+
@@ -265,6 +296,7 @@ public final class PilotController {
             return null;
         }
         List<CargoDetector.Candidate> secondAvailable=again.matching(cfg.cargoMode);
+        secondAvailable.removeIf(c->c.kind==CargoDetector.Kind.FRUIT && !cfg.acceptsFruitGroup(c.fruitGroup));
         secondAvailable.removeIf(c->c.center.y<again.contentTopY);
         secondAvailable.removeIf(c->isExactRecentDispatch(c,second,round));
         secondAvailable.removeIf(c->isFailedSelectionSkip(c,second,round));
@@ -286,6 +318,13 @@ public final class PilotController {
             int shown=Math.min(5,again.diagnostics.size());
             for(int i=0;i<shown;i++) emit("EDGE-DIAG "+again.diagnostics.get(i));
             return null;
+        }
+        if(best.kind==CargoDetector.Kind.FRUIT){
+            String visualReason=CargoDetector.visualBusyReasonAt(second,best.center,again.contentTopY);
+            if(visualReason!=null){
+                emit("CARGO EDGE VERIFY REJECTED ✅ • visual BUSY veto="+visualReason+" • no tap");
+                return null;
+            }
         }
         emit("CARGO EDGE VERIFY STABLE ✅ • second=("+Math.round(best.center.x)+","+Math.round(best.center.y)+")");
         return new CargoAndBitmap(best,second);
@@ -514,57 +553,69 @@ public final class PilotController {
      * tap.  Use that visual change as a lightweight ACK; retry the same proven
      * slot once before allowing Pikmin selection to start.
      */
+    /**
+     * Apply one colour-filter tap with an idempotency-safe ACK.
+     *
+     * alpha28 could tap the same colour twice when the first tap had actually
+     * succeeded but the saturation ACK was weak/late. On Pikmin Bloom that can
+     * toggle the filter back off. This version NEVER blindly re-taps a proven
+     * colour chip in the same plan.
+     */
     private void applyPikminFilterWithAck(PointAndBitmap filter,PilotConfig cfg,int round,PilotConfig.PikminType targetType)throws Exception{
-        PointAndBitmap current=filter;
-        Detector.FilterLattice beforeLattice=Detector.detectFilterLattice(current.b);
-        float beforeScore=Detector.filterRowSaturationScore(current.b,beforeLattice);
+        Detector.FilterLattice beforeLattice=Detector.detectFilterLattice(filter.b);
+        float beforeScore=Detector.filterRowSaturationScore(filter.b,beforeLattice);
+        float beforeShadow=Detector.filterTargetSelectedShadowScore(filter.b,beforeLattice,targetType);
 
-        for(int tapTry=1;tapTry<=2&&running.get();tapTry++){
-            tapMapped(current.b,current.p.x,current.p.y,55,"PIKMIN FILTER");
-            sleep(cfg.fast?220:320);
+        if(beforeLattice!=null && Detector.filterTargetAppearsSelected(filter.b,beforeLattice,targetType)){
+            emit("PIKMIN FILTER ALREADY SELECTED ✅ • no tap • shadow="+
+                    String.format(java.util.Locale.US,"%.3f",beforeShadow));
+            return;
+        }
 
+        tapMapped(filter.b,filter.p.x,filter.p.y,55,"PIKMIN FILTER ONCE");
+        emit("PIKMIN FILTER TAP ONCE ✅ • double-tap disabled");
+
+        // Observe several frames instead of toggling the chip again. Positive
+        // evidence may be the selected-chip shadow, the row dimming, or the
+        // roster entering its loading-placeholder state.
+        for(int obs=1;obs<=4&&running.get();obs++){
+            sleep(cfg.fast?260:380);
             Bitmap after=shot();
             Detector.FilterLattice afterLattice=Detector.detectFilterLattice(after);
             float afterScore=Detector.filterRowSaturationScore(after,afterLattice);
+            float shadow=Detector.filterTargetSelectedShadowScore(after,afterLattice,targetType);
+            int placeholders=Detector.selectionLoadingPlaceholderCount(after);
+            boolean selected=afterLattice!=null && Detector.filterTargetAppearsSelected(after,afterLattice,targetType);
+            boolean dimmed=beforeScore>=0.52f && afterScore>=0f && afterScore<=beforeScore*0.82f;
+            boolean loading=placeholders>=3 || Detector.isSelectionGridLoading(after);
 
-            if(beforeScore>=0.52f&&afterScore>=0f){
-                emit("PIKMIN FILTER ACK • try="+tapTry+
-                        " • saturation="+String.format(java.util.Locale.US,"%.3f",beforeScore)+
-                        " → "+String.format(java.util.Locale.US,"%.3f",afterScore));
-                if(afterScore<=beforeScore*0.82f){
-                    emit("PIKMIN FILTER ACK ✅ • row dimmed after tap");
-                    return;
-                }
-            }else{
-                // A row can already be dim when the game carried the previous
-                // filter state into the next selection page.  The slot location
-                // is still lattice-proven, so don't manufacture a false failure.
-                emit("PIKMIN FILTER ACK WEAK • pre/post saturation proof unavailable or already dim"+
-                        " • before="+String.format(java.util.Locale.US,"%.3f",beforeScore)+
-                        " • after="+String.format(java.util.Locale.US,"%.3f",afterScore));
+            emit("PIKMIN FILTER ACK • obs="+obs+
+                    " • shadow="+String.format(java.util.Locale.US,"%.3f",shadow)+
+                    " • saturation="+String.format(java.util.Locale.US,"%.3f",beforeScore)+" → "+
+                    String.format(java.util.Locale.US,"%.3f",afterScore)+
+                    " • loading="+loading+"("+placeholders+")");
+
+            if(selected){
+                emit("PIKMIN FILTER ACK ✅ • selected-chip shadow confirmed • no second tap");
                 return;
             }
-
-            if(tapTry==1){
-                if(afterLattice==null){
-                    emit("PIKMIN FILTER RETRY ABORT ⚠️ • row disappeared after tap");
-                    throw new RuntimeException("皮克敏顏色圓圈點擊後狀態無法確認");
-                }
-                float tx=afterLattice.targetX(targetType);
-                if(tx<after.getWidth()*0.055f||tx>after.getWidth()*0.945f||
-                        !Detector.filterTargetLooksPlausible(after,afterLattice,targetType)){
-                    emit("PIKMIN FILTER RETRY ABORT ⚠️ • target slot no longer proven");
-                    throw new RuntimeException("皮克敏顏色圓圈點擊後目標位置無法確認");
-                }
-                emit("PIKMIN FILTER RETRY #2 • same canonical slot • x="+Math.round(tx)+
-                        " • y="+Math.round(afterLattice.rowY));
-                current=new PointAndBitmap(new PointF(tx,afterLattice.rowY),after);
-                beforeLattice=afterLattice;
-                beforeScore=afterScore;
+            if(dimmed){
+                emit("PIKMIN FILTER ACK ✅ • row dimmed after single tap • no second tap");
+                return;
+            }
+            if(loading){
+                emit("PIKMIN FILTER ACK ✅ • roster loading after single tap • no second tap");
+                return;
             }
         }
-        throw new RuntimeException("皮克敏顏色圓圈點擊未生效");
+
+        // A completed gesture plus a still-proven target can be visually
+        // ambiguous on some phones. Do not manufacture a second tap: continue
+        // to the loading/count/GO reconciliation, which is safer than toggling
+        // the colour back off.
+        emit("PIKMIN FILTER ACK UNKNOWN ⚠️ • one tap was sent; NO SECOND TAP • continue to selection/GO reconcile");
     }
+
 
 
     /**
@@ -774,7 +825,16 @@ public final class PilotController {
                     if(planIndex>0){
                         emit("SELECTION PLAN RETAIN ✅ • "+plan.name+" remains start plan for next cargo • floor="+stickySelectionPlanFloor);
                     }
-                    // Non-idempotent: exactly one GO tap. Never blind retry after this line.
+                    // Non-idempotent: exactly one GO tap. Add a controller-
+                    // level absolute bottom-right lock as a second independent
+                    // defence. The centre drone is around the middle of the
+                    // screen and can never pass this gate.
+                    if(!Detector.isHardSafeGoPoint(reconciled.go.b,reconciled.go.p)){
+                        emit("GO SAFETY REJECTED 🛑 • detector point not in absolute bottom-right • px=("+
+                                Math.round(reconciled.go.p.x)+","+Math.round(reconciled.go.p.y)+")");
+                        throw new RuntimeException("GO detector returned unsafe non-bottom-right point; refusing tap");
+                    }
+                    emit("GO SAFETY LOCK ✅ • absolute bottom-right + orange/red disc + white G/O glyphs");
                     tapMapped(reconciled.go.b,reconciled.go.p.x,reconciled.go.p.y,55,"GO COMMIT "+plan.name);
                     emit("GO SENT ✅ • plan="+plan.name+" • non-idempotent commit; no blind retry");
                     return new SelectionCommit(true,plan.name);
@@ -856,18 +916,28 @@ public final class PilotController {
             }
 
             int placeholders=Detector.selectionLoadingPlaceholderCount(b);
-            loadingStill=placeholders>0 || Detector.isSelectionGridLoading(b);
+            // Trust concrete placeholder rings, not the older broad grid-loading
+            // heuristic by itself. The latter can stay true on some decor-heavy
+            // accounts even after the roster is usable, producing endless
+            // "loading" with placeholders=0.
+            boolean broadLoading=Detector.isSelectionGridLoading(b);
+            loadingStill=placeholders>=2 || (placeholders>0 && broadLoading);
             long elapsed=android.os.SystemClock.uptimeMillis()-started;
             if(loadingStill){
                 loadingSeen=true;
                 stableNonLoading=0;
                 emit("SELECTION LOADING ⏳ • GO off • placeholders="+placeholders+
-                        " • elapsed="+elapsed+"ms • Cancel/Fallback LOCKED • keep waiting");
+                        " • broad="+broadLoading+" • elapsed="+elapsed+"ms • Cancel/Fallback LOCKED • keep watching GO");
                 if(elapsed>=hardLoadingGuardMs){
-                    emit("SELECTION LOADING TIMEOUT ⚠️ • still loading after "+elapsed+"ms • fail closed; NO Cancel/Fallback");
-                    throw new RuntimeException("selection page still loading; refusing cancel/fallback");
+                    // Loading is not evidence of insufficiency. Some phones keep
+                    // placeholder/transition pixels around for a long time even
+                    // though taps are still accepted. Never Cancel/Fallback from
+                    // this state. Keep watching the strict GO detector and let the
+                    // user STOP manually if the network/game is genuinely stuck.
+                    emit("SELECTION LOADING EXTENDED ⏳ • elapsed="+elapsed+
+                            "ms • NO Cancel/Fallback • continue watching GO");
                 }
-                sleep(cfg.fast?420:620);
+                sleep(cfg.fast?520:760);
                 continue;
             }
 
@@ -1310,7 +1380,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.8-alpha30 • single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

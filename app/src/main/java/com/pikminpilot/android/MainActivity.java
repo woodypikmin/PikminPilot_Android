@@ -27,6 +27,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
     private EditText runCountInput;
     private Spinner fallback1Type,fallback2Type,fallback3Type,fallback1Count,fallback2Count,fallback3Count;
     private CheckBox fallback1Enabled,fallback2Enabled,fallback3Enabled;
+    private CheckBox fruitAll,fruitGreen,fruitYellow,fruitRed,fruitBlue;
     private Button cargoFruit,cargoSeedling,cargoBoth,typePink,typeWhite,typePurple,typeRock,speedStable,speedFast;
     private final StringBuilder log=new StringBuilder();
     private PilotConfig.CargoMode cargoMode=PilotConfig.CargoMode.FRUIT;
@@ -43,6 +44,8 @@ public class MainActivity extends Activity implements PilotController.Listener {
         summaryRun=findViewById(R.id.summaryRun);summaryCargo=findViewById(R.id.summaryCargo);summaryPikmin=findViewById(R.id.summaryPikmin);
         runCountInput=findViewById(R.id.runCountInput);
         fallback1Enabled=findViewById(R.id.fallback1Enabled); fallback2Enabled=findViewById(R.id.fallback2Enabled); fallback3Enabled=findViewById(R.id.fallback3Enabled);
+        fruitAll=findViewById(R.id.fruitAll); fruitGreen=findViewById(R.id.fruitGreen); fruitYellow=findViewById(R.id.fruitYellow);
+        fruitRed=findViewById(R.id.fruitRed); fruitBlue=findViewById(R.id.fruitBlue);
         fallback1Type=findViewById(R.id.fallback1Type); fallback2Type=findViewById(R.id.fallback2Type); fallback3Type=findViewById(R.id.fallback3Type);
         fallback1Count=findViewById(R.id.fallback1Count); fallback2Count=findViewById(R.id.fallback2Count); fallback3Count=findViewById(R.id.fallback3Count);
         cargoFruit=findViewById(R.id.cargoFruit);cargoSeedling=findViewById(R.id.cargoSeedling);cargoBoth=findViewById(R.id.cargoBoth);
@@ -73,6 +76,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         fast=prefs.getBoolean("fast",false); pikminCount=prefs.getInt("count",12);
         enforceMinimum();
         setupFallbackUi();
+        setupFruitFilterUi();
 
         cargoFruit.setOnClickListener(v->selectCargo(PilotConfig.CargoMode.FRUIT));
         cargoSeedling.setOnClickListener(v->selectCargo(PilotConfig.CargoMode.SEEDLING));
@@ -90,9 +94,9 @@ public class MainActivity extends Activity implements PilotController.Listener {
         findViewById(R.id.stopPilot).setOnClickListener(v->PilotController.get().stop());
         findViewById(R.id.testScreenshot).setOnClickListener(v->PilotController.get().testScreenshot(this::appendLog));
         findViewById(R.id.copyLog).setOnClickListener(v->copyLog());
-        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.6-alpha28 • log cleared");});
+        findViewById(R.id.clearLog).setOnClickListener(v->{log.setLength(0);logView.setText("");appendLog("BUILD 0.4.8-alpha30 • log cleared");});
         PilotController.get().setListener(this); refreshService(); refreshUi();
-        appendLog("BUILD 0.4.6-alpha28 • pixel progress-rail BUSY guard • free run-count input • loading-safe GO gate • 24% swipe • 3000ms settle");
+        appendLog("BUILD 0.4.8-alpha30 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • free run-count • 24% swipe • 3000ms settle");
     }
 
     @Override protected void onResume(){super.onResume();PilotController.get().setListener(this);refreshService();}
@@ -113,6 +117,13 @@ public class MainActivity extends Activity implements PilotController.Listener {
     private void enforceMinimum(){pikminCount=Math.max(PilotConfig.minimumCount(pikminType),Math.min(12,pikminCount));}
     private void save(){
         SharedPreferences.Editor e=prefs.edit().putString("cargo",cargoMode.name()).putString("type",pikminType.name()).putBoolean("fast",fast).putInt("count",pikminCount);
+        if(fruitAll!=null){
+            e.putBoolean("fruitAll",fruitAll.isChecked())
+                    .putBoolean("fruitGreen",fruitGreen.isChecked())
+                    .putBoolean("fruitYellow",fruitYellow.isChecked())
+                    .putBoolean("fruitRed",fruitRed.isChecked())
+                    .putBoolean("fruitBlue",fruitBlue.isChecked());
+        }
         if(fallback1Enabled!=null){
             saveFallback(e,1,fallback1Enabled,fallback1Type,fallback1Count);
             saveFallback(e,2,fallback2Enabled,fallback2Type,fallback2Count);
@@ -129,7 +140,7 @@ public class MainActivity extends Activity implements PilotController.Listener {
         String cargoText;
         if(cargoMode==PilotConfig.CargoMode.SEEDLING) cargoText="花苗只接受「某色花苗」文字（必須含「色花苗」）；上方單獨的「花苗」分頁永遠不點。";
         else if(cargoMode==PilotConfig.CargoMode.BOTH) cargoText="水果＋花苗模式只接受 OCR 含「色花苗」的盆栽；上方單獨「花苗」分頁永遠排除。";
-        else cargoText="水果採排除式 OCR；禮物/花苗排除。已搬運卡片仍以 card-first BUSY/COMPLETE 判定。";
+        else cargoText="水果採排除式 OCR；禮物/花苗排除。可勾選水果顏色群組；全拿時不做顏色過濾。";
         cargoHint.setText(cargoText);
         speedHint.setText(fast?"快速模式只縮短已驗證的等待與選取間隔；辨識重試與安全判定仍保留。":"穩定模式沿用目前已驗證的等待與辨識節奏。");
         int min=PilotConfig.minimumCount(pikminType);
@@ -171,14 +182,88 @@ public class MainActivity extends Activity implements PilotController.Listener {
         fallbacks.add(readFallback(1,fallback1Enabled,fallback1Type,fallback1Count));
         fallbacks.add(readFallback(2,fallback2Enabled,fallback2Type,fallback2Count));
         fallbacks.add(readFallback(3,fallback3Enabled,fallback3Type,fallback3Count));
-        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,requestedRuns,fast,fallbacks);
-        appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount+" • fallbacks="+enabledFallbackSummary(cfg));
+        java.util.EnumSet<PilotConfig.FruitGroup> fruitGroups=java.util.EnumSet.noneOf(PilotConfig.FruitGroup.class);
+        if(fruitGreen.isChecked()) fruitGroups.add(PilotConfig.FruitGroup.GREEN);
+        if(fruitYellow.isChecked()) fruitGroups.add(PilotConfig.FruitGroup.YELLOW);
+        if(fruitRed.isChecked()) fruitGroups.add(PilotConfig.FruitGroup.RED);
+        if(fruitBlue.isChecked()) fruitGroups.add(PilotConfig.FruitGroup.BLUE);
+        boolean takeAllFruit=fruitAll.isChecked() || fruitGroups.isEmpty();
+        PilotConfig cfg=new PilotConfig(pikminType,cargoMode,pikminCount,requestedRuns,fast,fallbacks,takeAllFruit,fruitGroups);
+        appendLog("START • "+runLabel()+" • "+PilotConfig.cargoName(cargoMode)+" • "+PilotConfig.pikminName(pikminType)+"×"+pikminCount+
+                " • fruit="+fruitFilterSummary(cfg)+" • fallbacks="+enabledFallbackSummary(cfg));
         openPikmin();
         // User workflow: leave Pikmin Bloom already open on the Expedition list,
         // switch back to Pilot, then press START.  Do not inspect the screen during
         // the Android app-switch animation: give Pikmin Bloom a full 3 seconds to
         // return from background to foreground before the first screenshot.
         new android.os.Handler(getMainLooper()).postDelayed(()->PilotController.get().start(cfg),3000);
+    }
+
+    private void setupFruitFilterUi(){
+        boolean all=prefs.getBoolean("fruitAll",true);
+        boolean g=prefs.getBoolean("fruitGreen",false);
+        boolean y=prefs.getBoolean("fruitYellow",false);
+        boolean r=prefs.getBoolean("fruitRed",false);
+        boolean bl=prefs.getBoolean("fruitBlue",false);
+        if(all || (!g&&!y&&!r&&!bl)){ all=true; g=y=r=bl=false; }
+        fruitAll.setChecked(all);
+        fruitGreen.setChecked(g);
+        fruitYellow.setChecked(y);
+        fruitRed.setChecked(r);
+        fruitBlue.setChecked(bl);
+        android.widget.CompoundButton.OnCheckedChangeListener groupListener=(button,isChecked)->{
+            if(isChecked){
+                fruitAll.setOnCheckedChangeListener(null);
+                fruitAll.setChecked(false);
+                fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+            } else if(!fruitGreen.isChecked()&&!fruitYellow.isChecked()&&!fruitRed.isChecked()&&!fruitBlue.isChecked()){
+                fruitAll.setOnCheckedChangeListener(null);
+                fruitAll.setChecked(true);
+                fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+            }
+            save(); refreshUi();
+        };
+        fruitGreen.setOnCheckedChangeListener(groupListener);
+        fruitYellow.setOnCheckedChangeListener(groupListener);
+        fruitRed.setOnCheckedChangeListener(groupListener);
+        fruitBlue.setOnCheckedChangeListener(groupListener);
+        fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+    }
+
+    private void onFruitAllChanged(boolean checked){
+        if(checked){
+            fruitGreen.setOnCheckedChangeListener(null); fruitYellow.setOnCheckedChangeListener(null);
+            fruitRed.setOnCheckedChangeListener(null); fruitBlue.setOnCheckedChangeListener(null);
+            fruitGreen.setChecked(false); fruitYellow.setChecked(false); fruitRed.setChecked(false); fruitBlue.setChecked(false);
+            setupFruitGroupListenersOnly();
+        } else if(!fruitGreen.isChecked()&&!fruitYellow.isChecked()&&!fruitRed.isChecked()&&!fruitBlue.isChecked()){
+            // Never leave the UI in a state that silently rejects every fruit.
+            fruitAll.setOnCheckedChangeListener(null); fruitAll.setChecked(true);
+            fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+        }
+        save(); refreshUi();
+    }
+
+    private void setupFruitGroupListenersOnly(){
+        android.widget.CompoundButton.OnCheckedChangeListener l=(button,isChecked)->{
+            if(isChecked){
+                fruitAll.setOnCheckedChangeListener(null); fruitAll.setChecked(false);
+                fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+            } else if(!fruitGreen.isChecked()&&!fruitYellow.isChecked()&&!fruitRed.isChecked()&&!fruitBlue.isChecked()){
+                fruitAll.setOnCheckedChangeListener(null); fruitAll.setChecked(true);
+                fruitAll.setOnCheckedChangeListener((b,c)->onFruitAllChanged(c));
+            }
+            save(); refreshUi();
+        };
+        fruitGreen.setOnCheckedChangeListener(l); fruitYellow.setOnCheckedChangeListener(l);
+        fruitRed.setOnCheckedChangeListener(l); fruitBlue.setOnCheckedChangeListener(l);
+    }
+
+    private String fruitFilterSummary(PilotConfig cfg){
+        if(cfg.fruitAll) return "全拿";
+        StringBuilder b=new StringBuilder();
+        for(PilotConfig.FruitGroup g:cfg.fruitGroups){if(b.length()>0)b.append('/');b.append(PilotConfig.fruitGroupName(g));}
+        return b.length()==0?"全拿":b.toString();
     }
 
     // Fallback is intentionally limited to the four special expedition types

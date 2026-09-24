@@ -471,6 +471,46 @@ public final class Detector {
     }
 
     /**
+     * Selected colour chips in Pikmin Bloom are lifted above the row and cast a
+     * neutral grey shadow under the outer white halo.  This is much safer than
+     * inferring selection from row saturation alone: the latter can stay dim
+     * while sprites are loading and led alpha28 to tap the same colour twice,
+     * toggling the filter back off on some phones.
+     *
+     * Score is the fraction of low-saturation, slightly-non-white pixels in the
+     * lower outer annulus around the target chip.  Unselected chips in the
+     * provided phone samples sit around 0.10-0.28; selected pink/rock chips are
+     * around 0.49-0.65.
+     */
+    public static float filterTargetSelectedShadowScore(Bitmap b,FilterLattice l,PilotConfig.PikminType type) {
+        if(l==null) return -1f;
+        float cx=l.targetX(type), cy=l.rowY;
+        if(Float.isNaN(cx)) return -1f;
+        int w=b.getWidth(),h=b.getHeight();
+        float spacing=Math.max(24f,l.spacing);
+        float inner=spacing*0.31f, outer=spacing*0.57f;
+        float inner2=inner*inner, outer2=outer*outer;
+        int x0=Math.max(0,(int)Math.floor(cx-outer)),x1=Math.min(w-1,(int)Math.ceil(cx+outer));
+        int y0=Math.max(0,(int)Math.floor(cy+spacing*0.035f)),y1=Math.min(h-1,(int)Math.ceil(cy+outer));
+        int total=0,shadow=0;
+        int step=Math.max(1,(int)(Math.min(w,h)/900f));
+        for(int y=y0;y<=y1;y+=step) for(int x=x0;x<=x1;x+=step){
+            float dx=x+0.5f-cx,dy=y+0.5f-cy,d2=dx*dx+dy*dy;
+            if(d2<inner2||d2>outer2) continue;
+            Hsv v=hsv(b.getPixel(x,y));
+            total++;
+            // Exclude pure white canvas; selected-chip drop shadow is neutral
+            // grey while keeping enough headroom for vendor colour management.
+            if(v.s<=0.10 && v.v>=0.62 && v.v<=0.985) shadow++;
+        }
+        return total>20?(float)shadow/total:-1f;
+    }
+
+    public static boolean filterTargetAppearsSelected(Bitmap b,FilterLattice l,PilotConfig.PikminType type) {
+        return filterTargetSelectedShadowScore(b,l,type)>=0.38f;
+    }
+
+    /**
      * Direct Android port of ImageAutomationDetector.detectPikminFilter() from
      * iOS Stage 11.5.4.31.  Purple and pink are the two magenta anchors; their
      * separation is exactly two chip slots.  No generic colour-row spacing is
@@ -613,24 +653,24 @@ public final class Detector {
         return new PointF(tx,targetY);
     }
 
+    /**
+     * Strict enabled-GO detector.  GO is non-idempotent, so a false positive is
+     * worse than a miss.  The target must be a large orange/red disc in the
+     * absolute bottom-right AND contain two large internal white glyph blobs
+     * (the G and O).  The centre drone can never pass the absolute X gate.
+     */
     public static PointF detectActiveGo(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
 
-        // GO is a non-idempotent commit action. Use BOTH viewport-relative and
-        // absolute screenshot gates so a bright drone / expedition control in
-        // the lower middle can never become a GO candidate even if activeContentRect
-        // is unusual on a vendor screenshot.
-        int x0=Math.max((int)(vp.left+vp.width()*0.70f),(int)(w*0.70f));
+        int x0=Math.max((int)(vp.left+vp.width()*0.76f),(int)(w*0.76f));
         int x1=Math.min(w,(int)vp.right);
-        int y0=Math.max((int)(vp.top+vp.height()*0.76f),(int)(h*0.76f));
+        int y0=Math.max((int)(vp.top+vp.height()*0.78f),(int)(h*0.78f));
         int y1=Math.min(h,(int)vp.bottom);
         boolean[] mask=new boolean[w*h];
         for(int y=Math.max(0,y0);y<y1;y++) for(int x=Math.max(0,x0);x<x1;x++) {
             Hsv v=hsv(b.getPixel(x,y));
-            // The enabled GO disc is peach/orange/red. Do not accept yellow,
-            // beige, cyan, or generic bright controls.
-            boolean orangeRed=(v.h<=38||v.h>=350);
-            if(orangeRed&&v.s>=0.30&&v.v>=0.62) mask[y*w+x]=true;
+            boolean orangeRed=(v.h<=42||v.h>=348);
+            if(orangeRed&&v.s>=0.28&&v.v>=0.60) mask[y*w+x]=true;
         }
 
         double area=Math.max(1,vp.width()*vp.height());
@@ -641,19 +681,18 @@ public final class Detector {
             double aspect=c.rect.width()/Math.max(1.0,c.rect.height());
             double fill=c.count/Math.max(1.0,c.rect.width()*c.rect.height());
             if(c.count<area*0.0020) continue;
-            if(wf<0.135||hf<0.060) continue;
-            if(aspect<0.62||aspect>1.55) continue;
-            if(fill<0.24) continue;
+            if(wf<0.155||wf>0.36||hf<0.060||hf>0.22) continue;
+            if(aspect<0.70||aspect>1.55) continue;
+            if(fill<0.22) continue;
 
             PointF center=c.center();
             double nx=(center.x-vp.left)/Math.max(1.0,vp.width());
             double ny=(center.y-vp.top)/Math.max(1.0,vp.height());
             double ax=center.x/Math.max(1.0,w), ay=center.y/Math.max(1.0,h);
-            if(nx<0.76||ny<0.80||ax<0.74||ay<0.78) continue;
+            // Hard physical-screen gate. Even a broken activeContentRect cannot
+            // move this acceptance zone into the centre drone.
+            if(nx<0.79||ny<0.80||ax<0.79||ay<0.80) continue;
 
-            // The actual GO disc contains large white GO glyphs. This extra
-            // structural check rejects warm artwork that happens to sit in the
-            // same corner.
             int white=0,sampled=0;
             int sx0=Math.max(0,(int)c.rect.left),sx1=Math.min(w-1,(int)c.rect.right);
             int sy0=Math.max(0,(int)c.rect.top),sy1=Math.min(h-1,(int)c.rect.bottom);
@@ -663,13 +702,47 @@ public final class Detector {
                 sampled++;
             }
             double whiteFraction=sampled>0?(double)white/sampled:0.0;
-            if(whiteFraction<0.020) continue;
+            if(whiteFraction<0.070) continue;
+            if(!hasGoGlyphPair(b,c.rect)) continue;
 
-            double score=c.count/area*7.0 + fill*0.8 + Math.min(0.35,whiteFraction) -
-                    Math.abs(ax-0.86)*0.28 - Math.abs(ay-0.90)*0.28;
+            double score=c.count/area*7.0 + fill*0.8 + Math.min(0.35,whiteFraction)
+                    -Math.abs(ax-0.85)*0.30 - Math.abs(ay-0.89)*0.30;
             if(score>bestScore){bestScore=score;best=center;}
         }
         return best;
+    }
+
+    private static boolean hasGoGlyphPair(Bitmap b,RectF rect){
+        int w=b.getWidth(),h=b.getHeight();
+        int rw=Math.max(1,(int)Math.ceil(rect.width())),rh=Math.max(1,(int)Math.ceil(rect.height()));
+        int ox=Math.max(0,(int)Math.floor(rect.left)),oy=Math.max(0,(int)Math.floor(rect.top));
+        rw=Math.min(rw,w-ox); rh=Math.min(rh,h-oy);
+        if(rw<20||rh<20) return false;
+        boolean[] white=new boolean[rw*rh];
+        int rx0=(int)(rw*0.06f),rx1=(int)(rw*0.94f);
+        int ry0=(int)(rh*0.30f),ry1=(int)(rh*0.88f);
+        for(int y=ry0;y<ry1;y++) for(int x=rx0;x<rx1;x++){
+            Hsv v=hsv(b.getPixel(ox+x,oy+y));
+            if(v.s<=0.18&&v.v>=0.90) white[y*rw+x]=true;
+        }
+        List<Component> letters=new ArrayList<>();
+        for(Component c:components(white,rw,rh)){
+            if(c.count<rw*rh*0.012) continue;
+            if(c.rect.width()<rw*0.16f||c.rect.height()<rh*0.20f) continue;
+            if(c.rect.left<=rx0+1||c.rect.right>=rx1-1||c.rect.top<=ry0+1||c.rect.bottom>=ry1-1) continue;
+            letters.add(c);
+        }
+        for(int i=0;i<letters.size();i++) for(int j=i+1;j<letters.size();j++){
+            PointF a=letters.get(i).center(),z=letters.get(j).center();
+            if(Math.abs(a.y-z.y)>rh*0.18f) continue;
+            if(Math.abs(a.x-z.x)<rw*0.20f) continue;
+            return true;
+        }
+        return false;
+    }
+
+    public static boolean isHardSafeGoPoint(Bitmap b,PointF p){
+        return p!=null && p.x>=b.getWidth()*0.79f && p.y>=b.getHeight()*0.80f;
     }
 
     public static PointF detectSelectionCancel(Bitmap b){

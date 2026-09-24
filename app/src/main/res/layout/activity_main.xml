@@ -59,6 +59,20 @@
                 <TextView android:id="@+id/cargoHint" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp"
                     android:text="沿用 iOS FruitDetector 的水果 card-first AVAILABLE 判定。" android:textColor="@color/text_secondary" android:textSize="12sp"/>
 
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp" android:text="水果顏色" android:textStyle="bold" android:textSize="14sp"/>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="可全拿，或只勾想搬的群組：青蘋果 / 黃(檸檬、柳橙) / 紅(蘋果、桃子) / 藍(梅子)。"
+                    android:textColor="@color/text_secondary" android:textSize="11sp"/>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:gravity="center_vertical">
+                    <CheckBox android:id="@+id/fruitAll" android:layout_width="wrap_content" android:layout_height="44dp" android:text="全拿"/>
+                    <CheckBox android:id="@+id/fruitGreen" android:layout_width="wrap_content" android:layout_height="44dp" android:text="青"/>
+                    <CheckBox android:id="@+id/fruitYellow" android:layout_width="wrap_content" android:layout_height="44dp" android:text="黃"/>
+                    <CheckBox android:id="@+id/fruitRed" android:layout_width="wrap_content" android:layout_height="44dp" android:text="紅"/>
+                    <CheckBox android:id="@+id/fruitBlue" android:layout_width="wrap_content" android:layout_height="44dp" android:text="藍"/>
+                </LinearLayout>
+
                 <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:layout_marginBottom="12dp" android:background="@color/divider"/>
 
                 <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="皮克敏種類" android:textStyle="bold" android:textSize="15sp"/>
