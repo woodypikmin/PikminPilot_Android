@@ -1,3 +1,27 @@
+# 0.4.8-alpha35 — fast Green X destination ACK
+
+alpha35 is a minimal continuation of alpha34. It keeps the page-level Green X safety fix, but removes ML Kit OCR from the normal successful close path.
+
+After an anchored Green X tap, an X miss is still **not** success by itself. The controller now first checks a strict OCR-free visual proof for the selected teal `探險` navigation pill (normalized top-row geometry + teal fill + internal white glyph pixels). If that proof is present, the Expedition list transition is acknowledged immediately and the expensive OCR/list scan is skipped.
+
+If the visual pill proof is absent or ambiguous, alpha35 falls back to the full alpha34 `CargoDetector.scan()` proof (`NAV-GUARD` + list evidence). The same anchored X still triggers a controlled retry. Therefore speed improves on the normal path without restoring the unsafe alpha33 rule that detector absence alone means success.
+
+Preserved unchanged: alpha34 anchored-X page ACK semantics, alpha33 selection/fallback proof, alpha32 BUSY duration fix, alpha31 strict GO ROI fix, ML Kit Chinese OCR, fruit/seedling classification, single-tap filter, sticky fallback cursor, loading-safe GO watch, and screenshot error=3 throttle.
+
+---
+
+# 0.4.8-alpha34 — Green X page-level transition ACK
+
+alpha34 is a minimal continuation of alpha33. It changes only the Green X close/ACK path.
+
+The important correction is that **a missed X detector is no longer treated as proof that the carrying page closed**. After each X tap, alpha34 re-screens the UI and requires positive proof that the Expedition list has returned (`NAV-GUARD` + at least one list item/card). If the same anchored X is still visible, it retries that same control. If neither the destination page nor the anchored X can be proven, it fails closed rather than tapping a stale coordinate.
+
+This preserves the existing anchored structural X detector, white-X tap refinement, screenshot→display coordinate mapping, and the rule that Accessibility gesture `COMPLETED` is never an ACK by itself.
+
+No BUSY/COMPLETE, fruit/seedling OCR, selection/fallback, loading, GO, filter, or list-scan behavior was changed.
+
+---
+
 # 0.4.8-alpha33 — selection fallback proof + Green X tap refinement
 
 Minimal delta from alpha32. This release addresses two controller-level false failures without changing the stable cargo, OCR, filter, loading, or GO contracts.

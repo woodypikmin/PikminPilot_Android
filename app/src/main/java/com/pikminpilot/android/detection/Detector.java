@@ -177,6 +177,71 @@ public final class Detector {
         return out;
     }
 
+    /**
+     * Fast, OCR-free proof that the main Expedition list sheet is visible.
+     *
+     * The selected 探險 tab is rendered as a distinctive teal rounded pill in
+     * the navigation row.  Green-X ACK only uses this as a positive destination
+     * proof after the anchored carrying X is already absent; all misses fall back
+     * to the slower OCR/card scan.  Geometry stays normalized so this remains
+     * portable across phones and screenshot/display scaling.
+     */
+    public static PointF detectExpeditionTabPill(Bitmap b) {
+        int w=b.getWidth(), h=b.getHeight();
+        int x0=Math.max(0,(int)(w*0.35f)), x1=Math.min(w,(int)(w*0.86f));
+        int y0=Math.max(0,(int)(h*0.07f)), y1=Math.min(h,(int)(h*0.24f));
+        if(x1<=x0||y1<=y0) return null;
+
+        // Keep the mask local to the small top-row ROI. This proof runs on the
+        // normal Green-X success path, so avoid a full-screen component pass.
+        int rw=x1-x0, rh=y1-y0;
+        boolean[] mask=new boolean[rw*rh];
+        for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
+            Hsv v=hsv(b.getPixel(x,y));
+            // Selected Expedition tab is cyan/teal. Keep this tolerant to OEM
+            // colour management, while excluding grey text and pale map areas.
+            if(v.h>=140&&v.h<=205&&v.s>=0.28&&v.v>=0.30)
+                mask[(y-y0)*rw+(x-x0)]=true;
+        }
+
+        PointF best=null; double bestScore=-1e9;
+        for(Component local:components(mask,rw,rh)) {
+            RectF rect=new RectF(local.rect); rect.offset(x0,y0);
+            float bw=rect.width(), bh=rect.height();
+            float wf=bw/Math.max(1f,w), hf=bh/Math.max(1f,h);
+            if(wf<0.115f||wf>0.245f||hf<0.018f||hf>0.060f) continue;
+            float aspect=bw/Math.max(1f,bh);
+            if(aspect<2.0f||aspect>7.0f) continue;
+            PointF center=new PointF(rect.centerX(),rect.centerY());
+            float nx=center.x/Math.max(1f,w), ny=center.y/Math.max(1f,h);
+            if(nx<0.50f||nx>0.78f||ny<0.09f||ny>0.22f) continue;
+
+            double fill=local.count/Math.max(1.0,bw*bh);
+            if(fill<0.52||fill>0.98) continue;
+
+            // The pill contains the white 探險 glyphs. Requiring a modest white
+            // fraction rejects unrelated teal artwork/buttons in the map area.
+            int white=0,total=0;
+            int sx0=Math.max(0,(int)Math.floor(rect.left));
+            int sx1=Math.min(w,(int)Math.ceil(rect.right));
+            int sy0=Math.max(0,(int)Math.floor(rect.top));
+            int sy1=Math.min(h,(int)Math.ceil(rect.bottom));
+            int step=Math.max(1,Math.min(w,h)/900);
+            for(int yy=sy0;yy<sy1;yy+=step) for(int xx=sx0;xx<sx1;xx+=step) {
+                Hsv v=hsv(b.getPixel(xx,yy));
+                total++;
+                if(v.s<=0.22&&v.v>=0.80) white++;
+            }
+            double whiteFraction=total>0?(double)white/total:0.0;
+            if(whiteFraction<0.018||whiteFraction>0.24) continue;
+
+            double score=fill*1.4+whiteFraction*0.8
+                    -Math.abs(nx-0.65)*0.8-Math.abs(ny-0.15)*0.5;
+            if(score>bestScore){bestScore=score;best=center;}
+        }
+        return best;
+    }
+
     public static PointF detectExpeditionButton(Bitmap b) {
         int w=b.getWidth(), h=b.getHeight();
         boolean[] mask=new boolean[w*h];

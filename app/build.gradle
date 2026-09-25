@@ -10,8 +10,8 @@ android {
         applicationId 'com.pikminpilot.android'
         minSdk 30
         targetSdk 36
-        versionCode 32
-        versionName '0.4.8-alpha33'
+        versionCode 34
+        versionName '0.4.8-alpha35'
     }
 
     buildTypes {
