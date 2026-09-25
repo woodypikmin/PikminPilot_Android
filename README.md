@@ -1,3 +1,39 @@
+# 0.4.8-alpha33 — selection fallback proof + Green X tap refinement
+
+Minimal delta from alpha32. This release addresses two controller-level false failures without changing the stable cargo, OCR, filter, loading, or GO contracts.
+
+## Selection fallback / Cancel
+
+Reported failure:
+
+```text
+GO RECONCILE COUNT • selected=2/12 • effective-required=12
+ERROR[E_GO] • selection page disappeared before GO commit; refusing retry/fallback
+```
+
+The controller previously treated a single frame that missed both the canonical filter row and OCR selection header as proof that the selection page had disappeared, even when a fresh selected/maximum reread had just succeeded. That could abort before `advanceSelectionPlan()` reached the existing Cancel/fallback state machine.
+
+alpha33:
+- A fresh `selected/maximum` reread now counts as current selection-page proof.
+- OCR `取消` and the existing lower-left Cancel shape are also accepted as page evidence.
+- One detector/OCR miss no longer aborts. The controller requires 3 consecutive non-loading frames with **no** fresh count, filter row, selection header, or Cancel evidence before declaring the selection page gone.
+- Any concrete loading frame clears the missing-page streak and continues the existing no-Cancel/no-fallback loading watch.
+- Once settled and still below `effectiveRequired` with GO off, the existing fallback path runs normally; selected > 0 still requires Cancel before changing colour.
+
+## Green X
+
+The anchored structural detector and disappearance ACK remain the safety contract. alpha33 only makes the already-detected target less brittle:
+- The initial `waitPoint()` hit remains the first anchored proof; one transient detector miss no longer resets it to zero. A second near-anchor hit is still required before tapping.
+- Structural anchor and tap target are tracked separately.
+- If the white-X glyph detector is available, its centre is used directly for the tap.
+- If only the legacy green-component path is available, the existing `refineCarryingCloseTapPoint()` is now actually used to move the gesture toward the white X instead of a gradient-biased green component centre.
+- Before retries, a one-frame reacquire flicker keeps the last proven anchored target instead of invalidating it.
+- Gesture `COMPLETED` is still not success; the original anchored X must disappear before ACK.
+
+Preserved unchanged: alpha32 BUSY duration fix, alpha31 strict GO ROI fix, GO non-idempotency, fruit/seedling recognition, ML Kit Chinese OCR, NAV-GUARD, 24% swipe + 3 s settle, single-tap colour filter, fixed 5-column selection grid, sticky Primary/F1-F3 cursor, loading-safe GO watch, and screenshot error=3 throttle.
+
+---
+
 # 0.4.8-alpha32 — BUSY duration cross-row false-positive fix
 
 Minimal delta from alpha31. This fixes a real expedition-list case where selective fruit filtering (for example GREEN) could see visible matching fruit but keep swiping because ordinary AVAILABLE travel-time OCR such as `22小時` from the row above was mis-associated with the next row and emitted `SKIP[BUSY_DURATION_HEADER]`.

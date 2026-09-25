@@ -100,7 +100,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.8-alpha31 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
+            emit("BUILD 0.4.8-alpha33 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -899,6 +899,7 @@ public final class PilotController {
         boolean loadingSeen=false;
         boolean loadingStill=false;
         int stableNonLoading=0;
+        int selectionMissingStreak=0;
         long started=android.os.SystemClock.uptimeMillis();
         final long minNoGoSettleMs=3000L;
         final long hardLoadingGuardMs=12000L;
@@ -926,6 +927,7 @@ public final class PilotController {
             if(loadingStill){
                 loadingSeen=true;
                 stableNonLoading=0;
+                selectionMissingStreak=0;
                 emit("SELECTION LOADING ⏳ • GO off • placeholders="+placeholders+
                         " • broad="+broadLoading+" • elapsed="+elapsed+"ms • Cancel/Fallback LOCKED • keep watching GO");
                 if(elapsed>=hardLoadingGuardMs){
@@ -946,6 +948,7 @@ public final class PilotController {
                     " • stable-nonloading="+stableNonLoading+" • elapsed="+elapsed+"ms • no fallback yet");
 
             SelectionObservedNow reread=readSelectionObservedBounded(cfg,1);
+            boolean freshCountProof=reread!=null;
             if(reread!=null){
                 observed=reread;
                 int req=SelectionPolicy.effectiveRequired(plan.configuredCount,observed.maximum);
@@ -956,8 +959,38 @@ public final class PilotController {
             java.util.List<CargoDetector.OcrItem> ocr;
             try{ocr=CargoDetector.recognize(b);}catch(Throwable t){ocr=java.util.Collections.emptyList();}
             Detector.FilterRowGeometry row=Detector.detectFilterRowGeometry(b);
-            boolean selectionVisible=row!=null || CargoDetector.hasSelectionHeader(ocr);
-            if(!selectionVisible) throw new RuntimeException("selection page disappeared before GO commit; refusing retry/fallback");
+            PointF cancelText=CargoDetector.cancelPoint(ocr);
+            boolean cancelShape=false;
+            if(cancelText==null && observed!=null && observed.selected>0){
+                cancelShape=Detector.detectSelectionCancel(b)!=null;
+            }
+            // A freshly re-read selected/maximum counter is itself strong proof
+            // that the selection sheet still exists. Do not abort/freeze fallback
+            // merely because one screenshot misses both the canonical chip row
+            // and the OCR header. Conversely, do not trust a stale prior count
+            // forever: require three consecutive frames with NO fresh count,
+            // filter row, selection header, or Cancel evidence before declaring
+            // that the selection page actually disappeared.
+            boolean selectionVisible=freshCountProof || row!=null || CargoDetector.hasSelectionHeader(ocr)
+                    || cancelText!=null || cancelShape;
+            if(selectionVisible){
+                if(selectionMissingStreak>0){
+                    emit("SELECTION PAGE VERIFY ✅ • evidence recovered after misses="+selectionMissingStreak+
+                            " • count="+freshCountProof+" • filterRow="+(row!=null)+
+                            " • header="+CargoDetector.hasSelectionHeader(ocr)+
+                            " • cancel="+(cancelText!=null||cancelShape));
+                }
+                selectionMissingStreak=0;
+            }else{
+                selectionMissingStreak++;
+                emit("SELECTION PAGE VERIFY ⚠️ • no current-frame proof • miss="+selectionMissingStreak+"/3"+
+                        " • refusing fallback/Cancel until state is confirmed");
+                if(selectionMissingStreak>=3 && elapsed>=minNoGoSettleMs){
+                    throw new RuntimeException("selection page disappeared before GO commit after 3 confirmed misses; refusing retry/fallback");
+                }
+                sleep(cfg.fast?320:500);
+                continue;
+            }
 
             // Require a real settling window AND two consecutive non-loading
             // frames before insufficiency is allowed to trigger fallback.
@@ -1075,51 +1108,79 @@ public final class PilotController {
      * the screen actually left the carrying page before declaring success.
      */
     private boolean closeGreenX(PointAndBitmap initial,PilotConfig cfg)throws Exception{
-        // The close button is fixed to Pikmin Bloom's bottom-left control area.
-        // Keep every verification anchored to the first real candidate so a
-        // decorative white X elsewhere can never replace the tap target.
-        PointF anchor=initial.p;
+        // Keep structural verification anchored to the first real bottom-left X.
+        // The tap point is tracked separately: glyph detection already lands on
+        // the white X itself; the legacy green-component path is refined toward
+        // the white cross so gradient fills cannot bias the gesture off-centre.
+        PointF structuralAnchor=initial.p;
         Bitmap anchorFrame=initial.b;
+        PointF initialGlyph=Detector.detectCarryingCloseGlyph(initial.b);
+        PointF tapAnchor=(initialGlyph!=null&&Math.hypot(initialGlyph.x-initial.p.x,initialGlyph.y-initial.p.y)
+                <=Math.max(24f,Math.min(initial.b.getWidth(),initial.b.getHeight())*0.055f))
+                ?initialGlyph:Detector.refineCarryingCloseTapPoint(initial.b,initial.p);
+        if(tapAnchor==null) tapAnchor=structuralAnchor;
+
         float shortEdge=Math.min(initial.b.getWidth(),initial.b.getHeight());
         float tolerance=Math.max(24f,shortEdge*0.055f);
-        int stable=1;
+        int stableHits=1;
 
-        for(int i=0;i<5&&running.get()&&stable<2;i++){
+        // The initial waitPoint() hit already proves one anchored frame. Require
+        // one more near the same anchor, but do not erase that proof because of
+        // a single transient detector miss while the carrying page animates in.
+        for(int i=0;i<5&&running.get()&&stableHits<2;i++){
             sleep(cfg.fast?110:170);
             Bitmap b=shot();
             PointF p=Detector.detectCarryingClose(b);
-            if(p!=null&&Math.hypot(p.x-anchor.x,p.y-anchor.y)<=tolerance){
-                stable++;
-                anchor=new PointF((anchor.x+p.x)*0.5f,(anchor.y+p.y)*0.5f);
+            if(p!=null&&Math.hypot(p.x-structuralAnchor.x,p.y-structuralAnchor.y)<=tolerance){
+                stableHits++;
+                structuralAnchor=new PointF((structuralAnchor.x+p.x)*0.5f,(structuralAnchor.y+p.y)*0.5f);
                 anchorFrame=b;
-                emit("GREEN X VERIFY • anchored • streak="+stable+"/2 • px=("+
-                        Math.round(anchor.x)+","+Math.round(anchor.y)+")");
+                PointF glyph=Detector.detectCarryingCloseGlyph(b);
+                PointF refined=(glyph!=null&&Math.hypot(glyph.x-p.x,glyph.y-p.y)<=tolerance)
+                        ?glyph:Detector.refineCarryingCloseTapPoint(b,p);
+                tapAnchor=refined==null?p:refined;
+                emit("GREEN X VERIFY • anchored • hits="+stableHits+"/2 • structural=("+
+                        Math.round(structuralAnchor.x)+","+Math.round(structuralAnchor.y)+") • tap=("+
+                        Math.round(tapAnchor.x)+","+Math.round(tapAnchor.y)+")");
             }else{
                 if(p!=null) emit("GREEN X VERIFY • rejected jump • candidate=("+
                         Math.round(p.x)+","+Math.round(p.y)+") anchor=("+
-                        Math.round(anchor.x)+","+Math.round(anchor.y)+")");
-                else emit("GREEN X VERIFY • anchored target not present yet");
-                stable=0;
+                        Math.round(structuralAnchor.x)+","+Math.round(structuralAnchor.y)+") • retained-hits="+stableHits+"/2");
+                else emit("GREEN X VERIFY • transient miss • retained-hits="+stableHits+"/2");
             }
         }
-        if(stable<2){
-            emit("GREEN X REJECTED ⚠️ • no stable bottom-left anchored target");
+        if(stableHits<2){
+            emit("GREEN X REJECTED ⚠️ • no second anchored bottom-left proof");
             return false;
         }
 
         for(int attempt=1;attempt<=4&&running.get();attempt++){
-            // Reacquire near the same anchor immediately before each retry.
+            // Reacquire near the same structural anchor immediately before each
+            // retry. If this one frame flickers, keep the last proven anchor
+            // rather than declaring the known control invalid.
             Bitmap fresh=shot();
             PointF current=Detector.detectCarryingClose(fresh);
-            if(current!=null&&Math.hypot(current.x-anchor.x,current.y-anchor.y)<=tolerance){
-                anchor=new PointF((anchor.x+current.x)*0.5f,(anchor.y+current.y)*0.5f);
+            if(current!=null&&Math.hypot(current.x-structuralAnchor.x,current.y-structuralAnchor.y)<=tolerance){
+                structuralAnchor=new PointF((structuralAnchor.x+current.x)*0.5f,(structuralAnchor.y+current.y)*0.5f);
                 anchorFrame=fresh;
+                PointF glyph=Detector.detectCarryingCloseGlyph(fresh);
+                PointF refined=(glyph!=null&&Math.hypot(glyph.x-current.x,glyph.y-current.y)<=tolerance)
+                        ?glyph:Detector.refineCarryingCloseTapPoint(fresh,current);
+                tapAnchor=refined==null?current:refined;
+                emit("GREEN X TARGET ✅ • attempt="+attempt+" • structural=("+
+                        Math.round(structuralAnchor.x)+","+Math.round(structuralAnchor.y)+") • tap=("+
+                        Math.round(tapAnchor.x)+","+Math.round(tapAnchor.y)+")");
+            }else if(current!=null){
+                emit("GREEN X TARGET • unrelated candidate ignored before tap • candidate=("+
+                        Math.round(current.x)+","+Math.round(current.y)+") • keep anchored target");
+            }else{
+                emit("GREEN X TARGET • reacquire flicker • keep last proven anchored tap point");
             }
 
             PilotAccessibilityService activeService=waitForService();
             PilotAccessibilityService.TapResult tr=activeService.tapFromBitmap(
-                    anchorFrame,anchor.x,anchor.y,cfg.fast?105:125).get(4,TimeUnit.SECONDS);
-            emit("GREEN X TAP #"+attempt+" • anchored screenshot=("+
+                    anchorFrame,tapAnchor.x,tapAnchor.y,cfg.fast?105:125).get(4,TimeUnit.SECONDS);
+            emit("GREEN X TAP #"+attempt+" • refined screenshot=("+
                     Math.round(tr.sourceX)+","+Math.round(tr.sourceY)+")/"+
                     tr.sourceWidth+"×"+tr.sourceHeight+" → display=("+
                     Math.round(tr.displayX)+","+Math.round(tr.displayY)+")/"+
@@ -1131,9 +1192,8 @@ public final class PilotController {
                 continue;
             }
 
-            // ACK on disappearance of THIS bottom-left control, not on an OCR
-            // scan of the next page. Two consecutive absent frames are enough;
-            // the next round's normal list scan will validate the returned page.
+            // ACK still requires disappearance of THIS anchored bottom-left
+            // control. Gesture COMPLETED alone is never treated as success.
             int absent=0;
             boolean stillSeen=false;
             for(int v=0;v<6&&running.get();v++){
@@ -1148,11 +1208,16 @@ public final class PilotController {
                         emit("GREEN-X ACK ✅ • anchored X disappeared on 2 consecutive frames");
                         return true;
                     }
-                }else if(Math.hypot(p.x-anchor.x,p.y-anchor.y)<=tolerance){
+                }else if(Math.hypot(p.x-structuralAnchor.x,p.y-structuralAnchor.y)<=tolerance){
                     absent=0; stillSeen=true;
-                    anchor=p; anchorFrame=verify;
+                    structuralAnchor=p; anchorFrame=verify;
+                    PointF glyph=Detector.detectCarryingCloseGlyph(verify);
+                    PointF refined=(glyph!=null&&Math.hypot(glyph.x-p.x,glyph.y-p.y)<=tolerance)
+                            ?glyph:Detector.refineCarryingCloseTapPoint(verify,p);
+                    tapAnchor=refined==null?p:refined;
                     emit("GREEN-X ACK • same X still visible @("+
-                            Math.round(p.x)+","+Math.round(p.y)+")");
+                            Math.round(p.x)+","+Math.round(p.y)+") • nextTap=("+
+                            Math.round(tapAnchor.x)+","+Math.round(tapAnchor.y)+")");
                 }else{
                     // A different candidate is irrelevant; do not jump the target.
                     absent++;
@@ -1380,7 +1445,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.8-alpha31 • single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.8-alpha33 • single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));
