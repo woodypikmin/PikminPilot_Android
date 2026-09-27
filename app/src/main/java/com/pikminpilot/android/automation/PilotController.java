@@ -100,7 +100,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.8-alpha35 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
+            emit("BUILD 0.4.8-alpha36 • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -1161,6 +1161,10 @@ public final class PilotController {
 
         for(int attempt=1;attempt<=4&&running.get();attempt++){
             Bitmap fresh=shot();
+            // From the second attempt onward, a previous close gesture has
+            // already been dispatched. If the Expedition list arrived between
+            // ACK frames, its own bottom-left X must never be treated as a retry.
+            if(attempt>1&&greenXDestinationFastProven(fresh)) return true;
             PointF current=Detector.detectCarryingClose(fresh);
             if(current!=null&&Math.hypot(current.x-structuralAnchor.x,current.y-structuralAnchor.y)<=tolerance){
                 structuralAnchor=new PointF((structuralAnchor.x+current.x)*0.5f,(structuralAnchor.y+current.y)*0.5f);
@@ -1188,6 +1192,7 @@ public final class PilotController {
                 for(int r=0;r<5&&running.get();r++){
                     sleep(cfg.fast?140:220);
                     Bitmap probe=shot();
+                    if(greenXDestinationFastProven(probe)) return true;
                     PointF p=Detector.detectCarryingClose(probe);
                     if(p!=null&&Math.hypot(p.x-structuralAnchor.x,p.y-structuralAnchor.y)<=tolerance){
                         structuralAnchor=p; anchorFrame=probe; retryArmed=true; resolved=true;
@@ -1225,7 +1230,7 @@ public final class PilotController {
                 continue;
             }
 
-            // alpha35 retains the alpha34 ACK contract: X absence by itself is NOT success. Some
+            // alpha36 retains the alpha34 ACK contract: X absence by itself is NOT success. Some
             // frames can miss the X detector even while the carrying page is
             // still on screen. Success now requires positive proof that the
             // Expedition list has returned. If the same anchored X is still
@@ -1235,6 +1240,11 @@ public final class PilotController {
             for(int v=0;v<7&&running.get();v++){
                 sleep(cfg.fast?140:220);
                 Bitmap verify=shot();
+                // Critical ordering: after the carrying X closes, the returned
+                // Expedition list has its own bottom-left X at nearly the same
+                // anchor. Prove destination first so that control can never be
+                // interpreted as "same carrying X still visible" and tapped.
+                if(greenXDestinationFastProven(verify)) return true;
                 PointF p=Detector.detectCarryingClose(verify);
                 if(p!=null&&Math.hypot(p.x-structuralAnchor.x,p.y-structuralAnchor.y)<=tolerance){
                     sameXSeen=true; retryArmed=true;
@@ -1268,6 +1278,7 @@ public final class PilotController {
             for(int r=0;r<5&&running.get()&&!retryArmed;r++){
                 sleep(cfg.fast?160:240);
                 Bitmap probe=shot();
+                if(greenXDestinationFastProven(probe)) return true;
                 PointF p=Detector.detectCarryingClose(probe);
                 if(p!=null&&Math.hypot(p.x-structuralAnchor.x,p.y-structuralAnchor.y)<=tolerance){
                     structuralAnchor=p; anchorFrame=probe; retryArmed=true;
@@ -1293,18 +1304,21 @@ public final class PilotController {
     /**
      * Positive transition ACK for closing the carrying page.
      *
-     * alpha35 keeps alpha34's safety contract (X miss alone is never success),
+     * alpha36 keeps alpha34's safety contract (X miss alone is never success),
      * but restores a fast normal path: first look for the selected Expedition
      * tab pill with cheap pixel geometry.  Only if that strict visual proof is
      * absent do we pay for the full ML Kit OCR + card/list scan.
      */
-    private boolean greenXDestinationProven(Bitmap b,boolean logMiss){
+    private boolean greenXDestinationFastProven(Bitmap b){
         PointF fast=Detector.detectExpeditionTabPill(b);
-        if(fast!=null){
-            emit("GREEN-X ACK DESTINATION FAST ✅ • expedition tab pill @("+
-                    Math.round(fast.x)+","+Math.round(fast.y)+") • OCR skipped");
-            return true;
-        }
+        if(fast==null) return false;
+        emit("GREEN-X ACK DESTINATION FAST ✅ • expedition tab pill @("+
+                Math.round(fast.x)+","+Math.round(fast.y)+") • destination wins over X-like controls • OCR skipped");
+        return true;
+    }
+
+    private boolean greenXDestinationProven(Bitmap b,boolean logMiss){
+        if(greenXDestinationFastProven(b)) return true;
 
         try{
             CargoDetector.Result r=CargoDetector.scan(b);
@@ -1533,7 +1547,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.8-alpha35 • single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.8-alpha36 • single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));

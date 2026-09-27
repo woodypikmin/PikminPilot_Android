@@ -1,4 +1,10 @@
-# 0.4.8-alpha35 — fast Green X destination ACK
+# 0.4.8-alpha36 — Green X destination-first ACK
+
+alpha36 is a minimal continuation of alpha35. It fixes a post-close ordering bug: the Expedition list itself has a bottom-left X near the carrying Green-X anchor. alpha35 checked for an X-like control before checking the returned Expedition tab, so a successful close could be followed by an unintended tap on the Expedition list X.
+
+Post-tap/retry frames now give the cheap selected-Expedition-tab proof precedence over any X candidate. If the Expedition pill is visible, Green-X close ACK succeeds immediately and no bottom-left X is tapped. If the fast page proof is absent, the existing anchored Green-X retry and OCR fallback logic remains unchanged.
+
+## Previous: 0.4.8-alpha35 — fast Green X destination ACK
 
 alpha35 is a minimal continuation of alpha34. It keeps the page-level Green X safety fix, but removes ML Kit OCR from the normal successful close path.
 
