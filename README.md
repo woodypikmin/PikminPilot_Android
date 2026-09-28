@@ -1,3 +1,41 @@
+# 0.4.8-alpha38 — Green X destination-first + OCR scan reuse
+
+alpha38 is a minimal continuation of alpha37. It changes only the post-GO Green-X transition path and the handoff into the next Expedition-list scan.
+
+- After the first anchored Green X tap, **page state is the source of truth**. Every fresh frame first checks whether the Expedition list has returned.
+- The cheap selected-`探險` pill remains the fast ACK path.
+- If that fast proof misses, `CargoDetector.scan()` (shared ML Kit Chinese OCR + existing list detector) runs **before any retry-X decision**.
+- If that OCR/list scan proves the Expedition list, Green-X handling terminates immediately; the bottom-left X on the Expedition sheet is never considered a retry target.
+- A post-tap retry is authorized only when the **strict structural carrying Green X** (white X + green ring) is reacquired on the current screenshot near the original anchor. Legacy/remembered X coordinates cannot authorize retries.
+- When destination confirmation already ran a full `CargoDetector.scan()`, the exact bitmap + result are cached once and consumed by the next `findCargo()` call. This avoids a duplicate screenshot/OCR pass and immediately reuses the fruit/seedling/BUSY classification already computed.
+- GO, BUSY/COMPLETE, fruit classification, seedling handling, single-tap filter, sticky fallback, loading behavior, screenshot throttling, and list swipe timing are unchanged.
+
+Expected log on OCR destination handoff:
+
+```text
+GREEN-X DESTINATION SCAN CACHE ✅ • OCR/list result retained for next round ...
+GREEN-X ACK DESTINATION OCR ✅ ... • X handling terminated
+ROUND N • reuse Green-X destination OCR/list scan ... • no recapture / no duplicate OCR
+```
+
+Expected safety log when the page is ambiguous:
+
+```text
+GREEN X RETRY HOLD 🛑 • destination unproven and no strict current-frame carrying X • no tap
+```
+
+---
+
+# 0.4.8-alpha37 — Green X current-frame retry lock
+
+alpha37 is a minimal continuation of alpha36. It fixes the remaining Green-X stale-coordinate race: after the carrying X is tapped, a retry is no longer allowed merely because an earlier frame saw that X. **Every Green-X tap must reacquire the same anchored carrying X on the current screenshot.**
+
+If the X is absent on the current frame, PikminPilot waits and checks for either the returned selected Expedition tab or a fresh reacquisition of the same carrying X. It never taps the saved coordinate while the transition state is unresolved. Full OCR/list proof remains fallback-only. All previous alpha31-alpha36 fixes are preserved.
+
+See `ALPHA37_VALIDATION.md` for the exact race and expected log behavior.
+
+---
+
 # 0.4.8-alpha36 — Green X destination-first ACK
 
 alpha36 is a minimal continuation of alpha35. It fixes a post-close ordering bug: the Expedition list itself has a bottom-left X near the carrying Green-X anchor. alpha35 checked for an X-like control before checking the returned Expedition tab, so a successful close could be followed by an unintended tap on the Expedition list X.
