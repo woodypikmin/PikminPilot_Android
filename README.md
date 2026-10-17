@@ -1,3 +1,7 @@
+# 0.4.8-alpha39 — anchored Green X retry uses the same detector as initial acquisition
+
+alpha39 is a minimal continuation of alpha38. It fixes the post-tap Green-X retry inconsistency: initial acquisition used the universal detector (strict structural X with legacy green-control fallback), while alpha38 retries used strict-only detection. Now every retry requires a fresh current-frame Green X near the original anchor, using the same universal detector as the initial acquisition. If Expedition is proven, X handling terminates immediately. If the anchored Green X is still visible, the app retries the X instead of spending repeated OCR cycles. Ambiguous frames never authorize a stale-coordinate tap.
+
 # 0.4.8-alpha38 — Green X destination-first + OCR scan reuse
 
 alpha38 is a minimal continuation of alpha37. It changes only the post-GO Green-X transition path and the handoff into the next Expedition-list scan.
