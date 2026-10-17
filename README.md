@@ -1,3 +1,21 @@
+# 0.4.8-alpha40 — Green X retry no longer throws away a fresh proof
+
+alpha40 is a minimal continuation of alpha39. The root bug was controller logic, not coordinate calibration: after a post-tap frame had already proven that the same anchored Green X was still present, alpha39 entered the next retry attempt and took *another* screenshot/re-detection before tapping. A one-frame detector miss at that second gate could therefore cancel a retry that had just been positively authorized.
+
+alpha40 removes that redundant gate. A fresh post-tap frame that proves the same anchored carrying control directly authorizes the next tap from that exact frame. In addition, an anchor-local green/white fingerprint is used as a relaxed fallback when the global component/glyph detector flickers. The Expedition-list white X is explicitly rejected by the high-white/low-green local signature. Destination proof still has priority, and Accessibility `COMPLETED` is still not treated as success.
+
+Expected failed-close retry log:
+
+```text
+GREEN-X ACK • ... STILL PRESENT • proof=UNIVERSAL|LOCAL-FINGERPRINT ... • retry #2 authorized from THIS frame
+GREEN X STILL VISIBLE ⚠️ • ... immediately proceeding to next tap using the fresh proven frame
+GREEN X TAP #2 ...
+```
+
+If Expedition has returned, the existing destination-first ACK terminates X handling before any retry. GO, BUSY/COMPLETE, fruit/seedling classification, filter, fallback, loading, and list-scan behavior are unchanged.
+
+---
+
 # 0.4.8-alpha39 — anchored Green X retry uses the same detector as initial acquisition
 
 alpha39 is a minimal continuation of alpha38. It fixes the post-tap Green-X retry inconsistency: initial acquisition used the universal detector (strict structural X with legacy green-control fallback), while alpha38 retries used strict-only detection. Now every retry requires a fresh current-frame Green X near the original anchor, using the same universal detector as the initial acquisition. If Expedition is proven, X handling terminates immediately. If the anchored Green X is still visible, the app retries the X instead of spending repeated OCR cycles. Ambiguous frames never authorize a stale-coordinate tap.

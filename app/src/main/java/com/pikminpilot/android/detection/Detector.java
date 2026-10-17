@@ -852,6 +852,71 @@ public final class Detector {
         return glyph!=null?glyph:detectCarryingCloseLegacy(b);
     }
 
+    /**
+     * Cheap anchor-local fingerprint for the already-proven carrying close button.
+     * This is intentionally NOT a global X detector: callers must provide an
+     * anchor that was positively verified on the carrying page.  It exists so a
+     * later frame cannot strand the state machine merely because the stricter
+     * component/glyph detector flickers for one frame.
+     */
+    public static double carryingCloseAnchorGreenFraction(Bitmap b, PointF approx) {
+        if(b==null||approx==null) return 0.0;
+        int w=b.getWidth(),h=b.getHeight();
+        double shortEdge=Math.max(1.0,Math.min(w,h));
+        int radius=Math.max(20,(int)Math.round(shortEdge*0.060));
+        int x0=Math.max(0,(int)Math.floor(approx.x-radius));
+        int x1=Math.min(w-1,(int)Math.ceil(approx.x+radius));
+        int y0=Math.max(0,(int)Math.floor(approx.y-radius));
+        int y1=Math.min(h-1,(int)Math.ceil(approx.y+radius));
+        int step=Math.max(1,(int)(shortEdge/900.0));
+        double r2=radius*(double)radius; int total=0,green=0;
+        for(int y=y0;y<=y1;y+=step) for(int x=x0;x<=x1;x+=step){
+            double dx=x+0.5-approx.x,dy=y+0.5-approx.y;
+            if(dx*dx+dy*dy>r2) continue;
+            Hsv v=hsv(b.getPixel(x,y)); total++;
+            // Looser than the global component detector on purpose.  The
+            // already-verified anchor supplies the spatial constraint.
+            if(v.h>=95&&v.h<=215&&v.s>=0.14&&v.v>=0.10&&v.v<=0.98) green++;
+        }
+        return total>0?(double)green/total:0.0;
+    }
+
+    public static double carryingCloseAnchorWhiteFraction(Bitmap b, PointF approx) {
+        if(b==null||approx==null) return 1.0;
+        int w=b.getWidth(),h=b.getHeight();
+        double shortEdge=Math.max(1.0,Math.min(w,h));
+        int radius=Math.max(20,(int)Math.round(shortEdge*0.060));
+        int x0=Math.max(0,(int)Math.floor(approx.x-radius));
+        int x1=Math.min(w-1,(int)Math.ceil(approx.x+radius));
+        int y0=Math.max(0,(int)Math.floor(approx.y-radius));
+        int y1=Math.min(h-1,(int)Math.ceil(approx.y+radius));
+        int step=Math.max(1,(int)(shortEdge/900.0));
+        double r2=radius*(double)radius; int total=0,white=0;
+        for(int y=y0;y<=y1;y+=step) for(int x=x0;x<=x1;x+=step){
+            double dx=x+0.5-approx.x,dy=y+0.5-approx.y;
+            if(dx*dx+dy*dy>r2) continue;
+            Hsv v=hsv(b.getPixel(x,y)); total++;
+            if(v.s<=0.22&&v.v>=0.78) white++;
+        }
+        return total>0?(double)white/total:1.0;
+    }
+
+    /**
+     * Relaxed retry proof at a previously verified Green-X anchor.  The returned
+     * boolean only authorizes another tap at that same anchor; it must never be
+     * used to discover a new X elsewhere on screen.
+     *
+     * The Expedition-list close control is a white disc, so the high-white guard
+     * prevents that button from being mistaken for the carrying Green X even if
+     * the selected-Expedition pill detector is temporarily missed.
+     */
+    public static boolean carryingCloseAnchorStillPresent(Bitmap b, PointF approx, double referenceGreenFraction) {
+        double green=carryingCloseAnchorGreenFraction(b,approx);
+        double white=carryingCloseAnchorWhiteFraction(b,approx);
+        double minGreen=Math.max(0.018,Math.min(0.065,Math.max(0.0,referenceGreenFraction)*0.30));
+        return green>=minGreen&&white<=0.62;
+    }
+
     public static PointF detectCarryingCloseGlyph(Bitmap b) {
         int w=b.getWidth(),h=b.getHeight(); RectF vp=activeContentRect(b);
         if(vp.width()<=1||vp.height()<=1)return null;

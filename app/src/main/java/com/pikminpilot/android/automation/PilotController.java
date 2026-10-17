@@ -112,7 +112,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.8-alpha39 • anchored current-frame Green-X retry • destination-first ACK • OCR scan reuse • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
+            emit("BUILD 0.4.8-alpha40 • immediate proven Green-X retry • anchor-local fingerprint fallback • destination-first ACK • OCR scan reuse • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -1131,12 +1131,12 @@ public final class PilotController {
      * the screen actually left the carrying page before declaring success.
      */
     private boolean closeGreenX(PointAndBitmap initial,PilotConfig cfg)throws Exception{
-        // First tap still uses the existing anchored Green-X contract.  The key
-        // alpha39 keeps page state authoritative after the tap, but retries use the same
-        // universal Green-X detector as the initial acquisition, anchored to the original control.
-        // Once a fresh screenshot proves the Expedition list, Green-X handling
-        // ends immediately and no bottom-left X on the list can ever authorize
-        // another tap.
+        // alpha40 keeps the alpha38/39 destination-first contract, but removes a
+        // contradictory extra reacquisition step between "X is still here" and
+        // the actual retry tap. Once a fresh ACK frame proves the anchored Green
+        // X is still present, that SAME fresh frame directly authorizes the next
+        // tap. A second detector pass is not allowed to revoke that proof just
+        // because the component detector flickers one frame later.
         PointF structuralAnchor=initial.p;
         Bitmap anchorFrame=initial.b;
         PointF initialGlyph=Detector.detectCarryingCloseGlyph(initial.b);
@@ -1149,8 +1149,7 @@ public final class PilotController {
         float tolerance=Math.max(24f,shortEdge*0.055f);
         int stableHits=1;
 
-        // Confirm the initial carrying control on a second nearby frame before
-        // the first non-idempotent close gesture.
+        // Keep the existing two-frame first-tap proof.
         for(int i=0;i<5&&running.get()&&stableHits<2;i++){
             sleep(cfg.fast?110:170);
             Bitmap b=shot();
@@ -1178,51 +1177,15 @@ public final class PilotController {
             return false;
         }
 
+        double anchorGreenRef=Detector.carryingCloseAnchorGreenFraction(anchorFrame,structuralAnchor);
+        emit("GREEN X ANCHOR FINGERPRINT • green="+
+                String.format(java.util.Locale.US,"%.3f",anchorGreenRef)+" • retry may use local anchored proof if global detector flickers");
+
         for(int attempt=1;attempt<=4&&running.get();attempt++){
-            // The first tap is allowed by the two-frame proof above. Every retry
-            // must reacquire the carrying control on a CURRENT frame near the
-            // original anchor.  Important: use the SAME universal detector as
-            // the initial acquisition (strict glyph first, legacy green-control
-            // fallback second). alpha38 incorrectly required the strict-only
-            // glyph detector here, so a still-visible X could become impossible
-            // to retry even though the first acquisition had succeeded.
-            if(attempt>1){
-                boolean reacquired=false;
-                for(int r=0;r<5&&running.get();r++){
-                    sleep(cfg.fast?140:220);
-                    Bitmap probe=shot();
-
-                    // Cheap destination proof always wins. Once the Expedition
-                    // tab is proven, X handling ends and the list's own white X
-                    // can never be touched.
-                    if(greenXDestinationFastProven(probe)) return true;
-
-                    PointF current=Detector.detectCarryingClose(probe);
-                    if(current!=null&&Math.hypot(current.x-structuralAnchor.x,current.y-structuralAnchor.y)<=tolerance){
-                        structuralAnchor=current;
-                        anchorFrame=probe;
-                        PointF glyph=Detector.detectCarryingCloseGlyph(probe);
-                        PointF refined=(glyph!=null&&Math.hypot(glyph.x-current.x,glyph.y-current.y)<=tolerance)
-                                ?glyph:Detector.refineCarryingCloseTapPoint(probe,current);
-                        tapAnchor=refined==null?current:refined;
-                        reacquired=true;
-                        emit("GREEN-X CARRYING STATE ✅ • current-frame anchored Green X reacquired with universal detector • retry authorized");
-                        break;
-                    }
-
-                    // If neither the fast destination nor the anchored carrying
-                    // control is visible, the frame is ambiguous. Only then pay
-                    // for the slower OCR/list proof. Do not blind-tap a remembered
-                    // coordinate.
-                    if(greenXDestinationProven(probe,true,true)) return true;
-                    emit("GREEN X RETRY HOLD 🛑 • destination unproven and anchored Green X absent on current frame • no blind tap");
-                }
-                if(!reacquired){
-                    emit("GREEN X RETRY BLOCKED ⚠️ • no current-frame anchored carrying control and destination not proven");
-                    return false;
-                }
-            }
-
+            // tapAnchor/anchorFrame always come from a positively proven carrying
+            // frame: either the initial two-frame proof or the immediately prior
+            // post-tap ACK frame. There is intentionally NO extra screenshot/
+            // reacquisition gate here for attempts 2..4.
             PilotAccessibilityService activeService=waitForService();
             PilotAccessibilityService.TapResult tr=activeService.tapFromBitmap(
                     anchorFrame,tapAnchor.x,tapAnchor.y,cfg.fast?105:125).get(4,TimeUnit.SECONDS);
@@ -1233,52 +1196,70 @@ public final class PilotController {
                     tr.displayWidth+"×"+tr.displayHeight+" • dispatch="+
                     (!tr.accepted?"REJECTED":(tr.completed?"COMPLETED":"CANCELLED")));
 
-            if(!tr.accepted||!tr.completed){
-                sleep(cfg.fast?120:180);
-                continue;
-            }
-
-            // Post-tap ACK is destination-first, but a positively visible
-            // carrying Green X means the close gesture did NOT take effect and
-            // should be retried.  Use the same universal detector as initial
-            // acquisition, anchored near the original control; never require a
-            // stricter detector after the tap than before it.
-            boolean carryingStillVisible=false;
+            // Gesture completion is never the ACK.  Whether Android reports
+            // COMPLETED or not, inspect a fresh game frame and decide from UI
+            // state. This also lets a rejected/cancelled dispatch retry safely.
+            boolean retryAuthorized=false;
             int ambiguousFrames=0;
             for(int v=0;v<7&&running.get();v++){
                 sleep(cfg.fast?140:220);
                 Bitmap verify=shot();
 
+                // Destination proof always wins. Once Expedition is back, Green-X
+                // handling terminates and the list's own white X is untouchable.
                 if(greenXDestinationFastProven(verify)) return true;
 
+                float sx=verify.getWidth()/Math.max(1f,anchorFrame.getWidth());
+                float sy=verify.getHeight()/Math.max(1f,anchorFrame.getHeight());
+                PointF expected=new PointF(structuralAnchor.x*sx,structuralAnchor.y*sy);
+                float tolNow=tolerance*Math.max(sx,sy);
+
                 PointF current=Detector.detectCarryingClose(verify);
-                if(current!=null&&Math.hypot(current.x-structuralAnchor.x,current.y-structuralAnchor.y)<=tolerance){
-                    carryingStillVisible=true;
-                    structuralAnchor=current;
+                boolean universal=current!=null&&Math.hypot(current.x-expected.x,current.y-expected.y)<=tolNow;
+                double localGreen=Detector.carryingCloseAnchorGreenFraction(verify,expected);
+                double localWhite=Detector.carryingCloseAnchorWhiteFraction(verify,expected);
+                boolean local=Detector.carryingCloseAnchorStillPresent(verify,expected,anchorGreenRef);
+
+                if(universal||local){
+                    // If the full detector flickered, the anchor-local colour
+                    // fingerprint is enough because this point was already
+                    // positively identified as the carrying Green X before tap.
+                    structuralAnchor=universal?current:expected;
                     anchorFrame=verify;
                     PointF glyph=Detector.detectCarryingCloseGlyph(verify);
-                    PointF refined=(glyph!=null&&Math.hypot(glyph.x-current.x,glyph.y-current.y)<=tolerance)
-                            ?glyph:Detector.refineCarryingCloseTapPoint(verify,current);
-                    tapAnchor=refined==null?current:refined;
-                    emit("GREEN-X ACK • destination not proven • anchored Green X STILL PRESENT on current frame • close did not take; retrying");
+                    PointF refined=(glyph!=null&&Math.hypot(glyph.x-structuralAnchor.x,glyph.y-structuralAnchor.y)<=tolNow)
+                            ?glyph:Detector.refineCarryingCloseTapPoint(verify,structuralAnchor);
+                    tapAnchor=refined==null?structuralAnchor:refined;
+                    anchorGreenRef=Math.max(0.010,Detector.carryingCloseAnchorGreenFraction(verify,structuralAnchor));
+                    retryAuthorized=true;
+                    emit("GREEN-X ACK • destination not proven • anchored carrying control STILL PRESENT • proof="+
+                            (universal?"UNIVERSAL":"LOCAL-FINGERPRINT")+" • green="+
+                            String.format(java.util.Locale.US,"%.3f",localGreen)+" • white="+
+                            String.format(java.util.Locale.US,"%.3f",localWhite)+" • retry #"+(attempt+1)+" authorized from THIS frame");
                     break;
                 }
 
                 ambiguousFrames++;
-                // Full OCR/list proof is intentionally deferred until the frame
-                // is ambiguous. This keeps the common failed-tap retry path fast.
-                // If OCR proves Expedition, cache that scan for the next round.
-                if(ambiguousFrames>=2&&greenXDestinationProven(verify,true,true)) return true;
+                // Only ambiguous frames pay for OCR/list proof. Keep it bounded
+                // so a failed close cannot spend tens of seconds repeatedly OCRing
+                // the same still-carrying page.
+                if((ambiguousFrames==2||ambiguousFrames==5)&&greenXDestinationProven(verify,true,true)) return true;
 
-                emit("GREEN-X ACK • ambiguous frame • no Expedition fast proof and no anchored Green X • waiting, no blind tap");
+                emit("GREEN-X ACK • ambiguous • destination not proven • global X miss • local green="+
+                        String.format(java.util.Locale.US,"%.3f",localGreen)+" white="+
+                        String.format(java.util.Locale.US,"%.3f",localWhite)+" • waiting for page/X proof");
             }
 
-            if(carryingStillVisible){
-                emit("GREEN X STILL VISIBLE ⚠️ • current-frame anchored control proves failed close • retrying X");
+            if(retryAuthorized){
+                if(attempt>=4){
+                    emit("GREEN X RETRY LIMIT ⚠️ • carrying control still present after final allowed tap");
+                    return false;
+                }
+                emit("GREEN X STILL VISIBLE ⚠️ • close did not take • immediately proceeding to next tap using the fresh proven frame");
                 continue;
             }
 
-            emit("GREEN X ACK UNRESOLVED ⚠️ • destination not proven and no current-frame anchored carrying control; fail closed");
+            emit("GREEN X ACK UNRESOLVED ⚠️ • destination not proven and carrying control could not be proven on fresh frames; fail closed");
             return false;
         }
         return false;
@@ -1287,7 +1268,7 @@ public final class PilotController {
     /**
      * Positive transition ACK for closing the carrying page.
      *
-     * alpha39 keeps destination page state authoritative. Cheap selected-tab
+     * alpha40 keeps destination page state authoritative. Cheap selected-tab
      * geometry stays the normal fast path. If the current frame still contains
      * the anchored carrying Green X, retry can proceed immediately without OCR.
      * Only ambiguous frames pay for the full CargoDetector scan; a proven list
@@ -1536,7 +1517,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.8-alpha39 • anchored current-frame Green-X retry + single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.8-alpha40 • immediate proven Green-X retry + anchor-local fallback + single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));
