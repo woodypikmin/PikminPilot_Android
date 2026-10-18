@@ -189,11 +189,16 @@ public final class Detector {
     public static PointF detectExpeditionTabPill(Bitmap b) {
         int w=b.getWidth(), h=b.getHeight();
         int x0=Math.max(0,(int)(w*0.35f)), x1=Math.min(w,(int)(w*0.86f));
-        int y0=Math.max(0,(int)(h*0.07f)), y1=Math.min(h,(int)(h*0.24f));
+        // The Expedition sheet can be dragged to different heights.  On some
+        // phones the selected 探險 pill sits around 45%H instead of the old
+        // 9..22%H band.  Keep the same strong pill geometry/glyph proof, but
+        // search the full range in which the sheet navigation row can appear.
+        int y0=Math.max(0,(int)(h*0.07f)), y1=Math.min(h,(int)(h*0.58f));
         if(x1<=x0||y1<=y0) return null;
 
-        // Keep the mask local to the small top-row ROI. This proof runs on the
-        // normal Green-X success path, so avoid a full-screen component pass.
+        // Keep the mask local to the horizontal navigation band and only the
+        // vertical range in which the Expedition sheet header can appear. This
+        // remains much cheaper than OCR while supporting variable sheet height.
         int rw=x1-x0, rh=y1-y0;
         boolean[] mask=new boolean[rw*rh];
         for(int y=y0;y<y1;y++) for(int x=x0;x<x1;x++) {
@@ -214,7 +219,7 @@ public final class Detector {
             if(aspect<2.0f||aspect>7.0f) continue;
             PointF center=new PointF(rect.centerX(),rect.centerY());
             float nx=center.x/Math.max(1f,w), ny=center.y/Math.max(1f,h);
-            if(nx<0.50f||nx>0.78f||ny<0.09f||ny>0.22f) continue;
+            if(nx<0.50f||nx>0.78f||ny<0.09f||ny>0.56f) continue;
 
             double fill=local.count/Math.max(1.0,bw*bh);
             if(fill<0.52||fill>0.98) continue;
@@ -235,8 +240,12 @@ public final class Detector {
             double whiteFraction=total>0?(double)white/total:0.0;
             if(whiteFraction<0.018||whiteFraction>0.24) continue;
 
+            // Do not assume one fixed sheet height.  Prefer the expected X
+            // position and only very weakly prefer either common navigation-row
+            // height (compact sheet ~15%H, expanded map sheet ~45%H).
+            double yPenalty=Math.min(Math.abs(ny-0.15),Math.abs(ny-0.45));
             double score=fill*1.4+whiteFraction*0.8
-                    -Math.abs(nx-0.65)*0.8-Math.abs(ny-0.15)*0.5;
+                    -Math.abs(nx-0.65)*0.8-yPenalty*0.12;
             if(score>bestScore){bestScore=score;best=center;}
         }
         return best;
@@ -915,6 +924,23 @@ public final class Detector {
         double white=carryingCloseAnchorWhiteFraction(b,approx);
         double minGreen=Math.max(0.018,Math.min(0.065,Math.max(0.0,referenceGreenFraction)*0.30));
         return green>=minGreen&&white<=0.62;
+    }
+
+    /**
+     * Hard veto for the Expedition list's white-disc / black-X close control at
+     * an already-known carrying-X anchor.  This is deliberately one-way: a
+     * strong white disc can only PREVENT a Green-X retry; it never proves the
+     * destination by itself.
+     *
+     * Fixture separation is very large: the carrying Green X is overwhelmingly
+     * green with only the small white glyph, while the list X is an almost solid
+     * white disc.  Keeping this as an explicit veto prevents a late transition
+     * from turning a correctly-authorized retry into a tap on the list X.
+     */
+    public static boolean carryingCloseAnchorIsWhiteListX(Bitmap b, PointF approx) {
+        double green=carryingCloseAnchorGreenFraction(b,approx);
+        double white=carryingCloseAnchorWhiteFraction(b,approx);
+        return white>=0.72&&green<=0.10;
     }
 
     public static PointF detectCarryingCloseGlyph(Bitmap b) {

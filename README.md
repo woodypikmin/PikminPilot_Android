@@ -1,3 +1,13 @@
+# 0.4.8-alpha41 — never press the Expedition list white X after Green X
+
+Alpha41 is a minimal continuation of alpha40 focused only on the Green-X handoff race shown by the two supplied screenshots. The carrying page has a green circular X; after it closes, the Expedition list can show a white circular X at almost the same coordinates. Alpha40 could observe the Green X on an early post-tap frame, authorize a retry, then the game could finish transitioning before that retry gesture landed. The second gesture therefore hit the list's white X.
+
+Alpha41 fixes that race in three layers: (1) selected-Expedition pill detection now supports variable sheet heights, including the supplied list screenshot where the pill is around 45%H; (2) retry cannot occur until the post-tap transition settle window has elapsed and carrying-X evidence persists; (3) immediately before every retry tap, a fresh frame is checked again, and a high-white/low-green circular control at the old anchor is a hard veto that can never be tapped as Green X. Destination proof always wins.
+
+All GO/BUSY/fruit/seedling/filter/fallback/loading logic remains unchanged from alpha40.
+
+---
+
 # 0.4.8-alpha40 — Green X retry no longer throws away a fresh proof
 
 alpha40 is a minimal continuation of alpha39. The root bug was controller logic, not coordinate calibration: after a post-tap frame had already proven that the same anchored Green X was still present, alpha39 entered the next retry attempt and took *another* screenshot/re-detection before tapping. A one-frame detector miss at that second gate could therefore cancel a retry that had just been positively authorized.
