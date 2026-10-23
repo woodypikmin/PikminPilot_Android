@@ -1,4 +1,4 @@
-# 0.4.8-alpha41 — never press the Expedition list white X after Green X
+# 0.4.8-alpha42 — never press the Expedition list white X after Green X
 
 Alpha41 is a minimal continuation of alpha40 focused only on the Green-X handoff race shown by the two supplied screenshots. The carrying page has a green circular X; after it closes, the Expedition list can show a white circular X at almost the same coordinates. Alpha40 could observe the Green X on an early post-tap frame, authorize a retry, then the game could finish transitioning before that retry gesture landed. The second gesture therefore hit the list's white X.
 

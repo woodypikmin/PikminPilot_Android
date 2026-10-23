@@ -112,7 +112,7 @@ public final class PilotController {
         try{
             requireService();
             stage("START","啟動 • 開始掃描探險列表");
-            emit("BUILD 0.4.8-alpha41 • Green-X transition settle + white-list-X hard veto • variable-height expedition-tab ACK • OCR scan reuse • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
+            emit("BUILD 0.4.8-alpha42 • Green-X transition settle + white-list-X hard veto • variable-height expedition-tab ACK • OCR scan reuse • persistent loading GO-watch • fruit color filter • single-tap filter • hard GO lock • second-frame BUSY veto • adaptive screenshot throttle");
             emit("ANDROID PILOT START • target="+(cfg.dispatchTarget==0?"∞":cfg.dispatchTarget)+
                     " • cargo="+PilotConfig.cargoName(cfg.cargoMode)+
                     " • type="+PilotConfig.pikminName(cfg.type)+" • count="+cfg.pikminCount+
@@ -1131,12 +1131,12 @@ public final class PilotController {
      * the screen actually left the carrying page before declaring success.
      */
     private boolean closeGreenX(PointAndBitmap initial,PilotConfig cfg)throws Exception{
-        // alpha41 keeps destination-first ACK, but closes the remaining transition
-        // race: Pikmin Bloom may leave the carrying page a few hundred ms AFTER a
-        // verify frame still showed the Green X.  Therefore a retry is never fired
-        // immediately from that early frame.  We allow the transition to settle,
-        // require persistent carrying-X evidence, and run a final current-frame
-        // guard that hard-vetoes the Expedition list's white-disc X.
+        // alpha42 keeps destination-first ACK and makes the already-verified Green-X anchor sticky across detector flicker.
+        // The first Green X is positively proven on two frames. After that, failure to
+        // rediscover the glyph/component must not strand the state machine: the proven
+        // anchor remains eligible for a guarded retry until either destination state or
+        // the Expedition list's white-disc/black-X replacement is observed. Every retry
+        // still uses a fresh screenshot so the list X is never tapped.
         PointF structuralAnchor=initial.p;
         Bitmap anchorFrame=initial.b;
         PointF initialGlyph=Detector.detectCarryingCloseGlyph(initial.b);
@@ -1203,12 +1203,14 @@ public final class PilotController {
                     double gWhite=Detector.carryingCloseAnchorWhiteFraction(guard,expected);
 
                     if(Detector.carryingCloseAnchorIsWhiteListX(guard,expected)){
-                        emit("GREEN X RETRY VETO 🛑 • white-disc/black-X control at old anchor • green="+
+                        emit("GREEN X POST-CLOSE ACK ✅ • white-disc/black-X control replaced the carrying Green X • green="+
                                 String.format(java.util.Locale.US,"%.3f",gGreen)+" white="+
-                                String.format(java.util.Locale.US,"%.3f",gWhite)+" • NEVER tap this as carrying X");
-                        if(greenXDestinationProven(guard,true,true)) return true;
-                        sleep(cfg.fast?180:260);
-                        continue;
+                                String.format(java.util.Locale.US,"%.3f",gWhite)+" • X handling terminated; NEVER tap list X");
+                        // The user-supplied list fixture proves this control is the post-close
+                        // white X.  Destination OCR/pill may flicker, but this replacement is
+                        // sufficient to know the carrying Green X is gone.  Let the normal next
+                        // list scan establish cargo state instead of risking a second X tap.
+                        return true;
                     }
 
                     PointF now=Detector.detectCarryingClose(guard);
@@ -1233,8 +1235,29 @@ public final class PilotController {
                     sleep(cfg.fast?180:260);
                 }
                 if(!retryFrameReady){
-                    emit("GREEN X RETRY BLOCKED ⚠️ • no safe current-frame carrying-X proof; refusing stale-coordinate tap");
-                    return false;
+                    // alpha42: the Green X was already positively verified before tap #1.
+                    // Do one final fresh guard. If the destination/list-X replacement is not
+                    // present, keep the proven anchor sticky instead of failing merely because
+                    // the global/local detector flickered on this frame.
+                    Bitmap guard=shot();
+                    if(greenXDestinationFastProven(guard)) return true;
+                    float gsx=guard.getWidth()/Math.max(1f,anchorFrame.getWidth());
+                    float gsy=guard.getHeight()/Math.max(1f,anchorFrame.getHeight());
+                    PointF expected=new PointF(structuralAnchor.x*gsx,structuralAnchor.y*gsy);
+                    double gGreen=Detector.carryingCloseAnchorGreenFraction(guard,expected);
+                    double gWhite=Detector.carryingCloseAnchorWhiteFraction(guard,expected);
+                    if(Detector.carryingCloseAnchorIsWhiteListX(guard,expected) || (gWhite>=0.55&&gGreen<=0.12)){
+                        emit("GREEN X POST-CLOSE ACK ✅ • current anchor became white/list-like while retry detector missed • green="+
+                                String.format(java.util.Locale.US,"%.3f",gGreen)+" white="+
+                                String.format(java.util.Locale.US,"%.3f",gWhite)+" • retry cancelled; list X will not be tapped");
+                        return true;
+                    }
+                    PointF stickyTap=new PointF(tapAnchor.x*gsx,tapAnchor.y*gsy);
+                    structuralAnchor=expected;
+                    tapAnchor=stickyTap;
+                    anchorFrame=guard;
+                    retryFrameReady=true;
+                    emit("GREEN X RETRY LATCH ✅ • destination not proven and no white/list-X replacement • reusing previously verified Green-X anchor on fresh frame • detector flicker cannot cancel retry");
                 }
             }
 
@@ -1279,11 +1302,10 @@ public final class PilotController {
                 // that signature can NEVER authorize a retry.
                 if(Detector.carryingCloseAnchorIsWhiteListX(verify,expected)){
                     carryingFrames=0;
-                    emit("GREEN-X ACK LIST-X VETO 🛑 • white-disc control at old Green-X anchor • green="+
+                    emit("GREEN-X ACK POST-CLOSE ✅ • white-disc/black-X replacement at old Green-X anchor • green="+
                             String.format(java.util.Locale.US,"%.3f",localGreen)+" white="+
-                            String.format(java.util.Locale.US,"%.3f",localWhite)+" • retry forbidden");
-                    if(greenXDestinationProven(verify,true,true)) return true;
-                    continue;
+                            String.format(java.util.Locale.US,"%.3f",localWhite)+" • carrying Green X is gone; terminate X handling");
+                    return true;
                 }
 
                 boolean local=Detector.carryingCloseAnchorStillPresent(verify,expected,anchorGreenRef);
@@ -1333,7 +1355,15 @@ public final class PilotController {
                 continue;
             }
 
-            emit("GREEN X ACK UNRESOLVED ⚠️ • destination not proven and carrying control could not be proven on fresh frames; fail closed");
+            if(attempt<4){
+                // alpha42 sticky-anchor rule: the original Green X was positively proven.
+                // If no destination and no white/list-X replacement has appeared, do not stop
+                // just because rediscovery flickered. The next loop performs a fresh guard and
+                // then retries the same verified anchor.
+                emit("GREEN X ACK AMBIGUOUS → RETRY • destination not proven and no white/list-X replacement • retain verified Green-X anchor for guarded retry #"+(attempt+1));
+                continue;
+            }
+            emit("GREEN X ACK UNRESOLVED ⚠️ • retry limit reached without destination or post-close white-X proof");
             return false;
         }
         return false;
@@ -1342,7 +1372,7 @@ public final class PilotController {
     /**
      * Positive transition ACK for closing the carrying page.
      *
-     * alpha41 keeps destination page state authoritative. The selected-tab
+     * alpha42 keeps destination page state authoritative while latching the already-verified Green-X anchor across detector flicker. The selected-tab
      * geometry now supports both compact and expanded Expedition sheet heights.
      * Green-X retry is delayed long enough for a successful close transition to
      * settle, and a white-disc list-X veto is checked again immediately before
@@ -1592,7 +1622,7 @@ public final class PilotController {
             String xText=x==null?"greenX=false":("greenX=true@("+Math.round(x.x)+","+Math.round(x.y)+")");
             String ctaText=seedCta==null?"seedlingCTA=false":("seedlingCTA=true@("+Math.round(seedCta.x)+","+Math.round(seedCta.y)+")");
             String rowText=row==null?"filterRow=false":("filterRow=true@y="+Math.round(row.y)+" chips="+row.chipCount+" spacing="+Math.round(row.spacing));
-            String r="BUILD 0.4.8-alpha41 • Green-X transition settle + white-list-X veto + variable-height destination ACK + single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
+            String r="BUILD 0.4.8-alpha42 • Green-X transition settle + white-list-X veto + variable-height destination ACK + single-tap filter + hard GO lock + BUSY preflight • Screenshot "+b.getWidth()+"×"+b.getHeight()+
                     " • fruit="+c.fruits.size()+" • seedling="+c.seedlings.size()+" • blocked="+c.blocked.size()+
                     " • expedition="+(e!=null)+" • GO="+(g!=null)+" • "+ctaText+" • "+rowText+" • "+xText;
             main.post(()->callback.accept(r));
